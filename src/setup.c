@@ -117,7 +117,7 @@ setup_system_info_page(void)
 int
 setup_requested(void)
 {
-    if (!CONFIG_SETUP)
+    if (!CONFIG_QEMU)
         return 0;
     return romfile_loadbool(SETUP_FWCFG_PATH, 0);
 }
@@ -125,7 +125,7 @@ setup_requested(void)
 void
 setup_run(void)
 {
-    if (!CONFIG_SETUP)
+    if (!CONFIG_QEMU)
         return;
 
     int selected = 0;
