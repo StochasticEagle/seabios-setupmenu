@@ -36,7 +36,7 @@ SRCBOTH=misc.c stacks.c output.c string.c block.c cdrom.c disk.c	\
     hw/ramdisk.c hw/lsi-scsi.c hw/esp-scsi.c hw/megasas.c		\
     hw/mpt-scsi.c
 SRC16=$(SRCBOTH)
-SRC32FLAT=$(SRCBOTH) post.c setup.c e820map.c malloc.c romfile.c x86.c	\
+SRC32FLAT=$(SRCBOTH) post.c setup.c e820map.c malloc.c romfile.c x86.c		\
     optionroms.c pmm.c font.c boot.c bootsplash.c jpeg.c bmp.c		\
     tcgbios.c sha1.c hw/pcidevice.c hw/ahci.c hw/pvscsi.c		\
     hw/usb-xhci.c hw/usb-hub.c hw/sdcard.c fw/coreboot.c		\
@@ -243,7 +243,7 @@ $(OUT)vgarom.o: $(OUT)vgaccode16.o $(OUT)vgaentry.o $(OUT)vgasrc/vgalayout.lds v
 
 $(OUT)vgabios.bin.raw: $(OUT)vgarom.o
 	@echo "  Extracting binary $@"
-	$(Q)$(OBJCOPY) -O binary $< $(OUT)vgabios.bin.raw
+	$(Q)$(OBJCOPY) -O binary $< $@
 
 $(OUT)vgabios.bin: $(OUT)vgabios.bin.raw scripts/buildrom.py
 	@echo "  Finalizing rom $@"
