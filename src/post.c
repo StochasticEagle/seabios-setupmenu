@@ -20,6 +20,7 @@
 #include "malloc.h" // malloc_init
 #include "memmap.h" // SYMBOL
 #include "output.h" // dprintf
+#include "setup.h" // setup_requested, setup_run
 #include "string.h" // memset
 #include "util.h" // kbd_init
 #include "tcgbios.h" // tpm_*
@@ -219,6 +220,12 @@ maininit(void)
 
     // Run option roms
     optionrom_setup();
+
+    // Enter BIOS Setup when requested by the QEMU fw_cfg interface.
+    if (setup_requested()) {
+        wait_threads();
+        setup_run();
+    }
 
     // Allow user to modify overall boot order.
     interactive_bootmenu();
