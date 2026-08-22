@@ -225,7 +225,7 @@ is_pci_vga(struct pci_device *pci)
     return 1;
 }
 
-// Copy a rom to its permanent location below 1MiB
+// Copy a rom to its permanent location below 1MB
 static struct rom_header *
 copy_rom(struct rom_header *rom)
 {
@@ -265,7 +265,7 @@ map_pcirom(struct pci_device *pci)
 
     if (orig == sz || (u32)(orig + 4*1024*1024) < 20*1024*1024) {
         // Don't try to map to a pci addresses at its max, in the last
-        // 4MiB of ram, or the first 16MiB of ram.
+        // 4MB of ram, or the first 16MB of ram.
         dprintf(6, "Preset rom address doesn't look valid\n");
         goto fail;
     }

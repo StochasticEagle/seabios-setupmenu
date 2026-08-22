@@ -305,7 +305,7 @@ nvme_probe_ns(struct nvme_ctrl *ctrl, u32 ns_idx, u8 mdts)
         ns->max_req_size = -1U;
     }
 
-    char *desc = znprintf(MAXDESCSIZE, "NVMe NS %u: %llu MiB (%llu %u-byte "
+    char *desc = znprintf(MAXDESCSIZE, "NVMe NS %u: %llu MB (%llu %u-byte "
                           "blocks + %u-byte metadata)",
                           ns_id, (ns->lba_count * ns->block_size) >> 20,
                           ns->lba_count, ns->block_size, ns->metadata_size);

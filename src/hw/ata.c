@@ -799,7 +799,7 @@ init_drive_ata(struct atadrive_s *dummy, u16 *buffer)
     }
     char model[MAXMODEL+1];
     char *desc = znprintf(MAXDESCSIZE
-                          , "ata%d-%d: %s ATA-%d Hard-Disk (%u %ciBytes)"
+                          , "ata%d-%d: %s ATA-%d Hard-Disk (%u %cBytes)"
                           , adrive->chan_gf->ataid, adrive->slave
                           , ata_extract_model(model, MAXMODEL, buffer)
                           , ata_extract_version(buffer)

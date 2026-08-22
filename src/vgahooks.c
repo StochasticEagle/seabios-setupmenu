@@ -126,7 +126,7 @@ getAMDRamSpeed(void)
 /* int 0x15 - 5f18
 
    ECX = unknown/don't care
-   EBX[3..0] Frame Buffer Size 2^N MiB
+   EBX[3..0] Frame Buffer Size 2^N MB
    EBX[7..4] Memory speed:
        0: SDR  66Mhz
        1: SDR 100Mhz

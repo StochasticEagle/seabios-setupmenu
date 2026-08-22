@@ -521,7 +521,7 @@ static int ahci_port_setup(struct ahci_port_s *port)
             adjprefix = 'G';
         }
         port->desc = znprintf(MAXDESCSIZE
-                              , "AHCI/%d: %s ATA-%d Hard-Disk (%u %ciBytes)"
+                              , "AHCI/%d: %s ATA-%d Hard-Disk (%u %cBytes)"
                               , port->pnr
                               , ata_extract_model(model, MAXMODEL, buffer)
                               , ata_extract_version(buffer)

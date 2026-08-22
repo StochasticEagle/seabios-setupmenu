@@ -240,12 +240,12 @@ typedef struct {
   UINT32                            UmaSize;
 
   ///
-  /// Start address of persistent allocation in high (>1MiB) memory
+  /// Start address of persistent allocation in high (>1MB) memory
   ///
   UINT32                            HiPermanentMemoryAddress;
 
   ///
-  /// Size of persistent allocation in high (>1MiB) memory
+  /// Size of persistent allocation in high (>1MB) memory
   ///
   UINT32                            HiPermanentMemorySize;
 } EFI_COMPATIBILITY16_TABLE;

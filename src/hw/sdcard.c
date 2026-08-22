@@ -469,7 +469,7 @@ sdcard_card_setup(struct sddrive_s *drive, int volt, int prio)
     int i;
     for (i=0; i < (drive->card_type & SF_MMC ? 6 : 5); i++)
         pnm[i] = cid[11-i];
-    char *desc = znprintf(MAXDESCSIZE, "%s %s %dMiB"
+    char *desc = znprintf(MAXDESCSIZE, "%s %s %dMB"
                           , drive->card_type & SF_MMC ? "MMC drive" : "SD card"
                           , pnm, (u32)(drive->drive.sectors >> 11));
     dprintf(1, "Found sdcard at %p: %s\n", regs, desc);

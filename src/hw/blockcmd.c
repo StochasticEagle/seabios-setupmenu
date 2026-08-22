@@ -377,7 +377,7 @@ scsi_drive_setup(struct drive_s *drive, const char *s, int prio)
     // sending the command if the (obsolete, but still provided by QEMU)
     // fixed disk geometry page may not be supported.
     //
-    // We could also send the command only to small disks (e.g. <504MiB)
+    // We could also send the command only to small disks (e.g. <504MB)
     // but some old USB keys only support a very small subset of SCSI which
     // does not even include the MODE SENSE command!
     //
