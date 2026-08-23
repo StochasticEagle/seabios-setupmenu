@@ -423,9 +423,7 @@ int bootprio_find_usb(struct usbdevice_s *usbdev, int lun)
 {
     if (!CONFIG_BOOTORDER)
         return -1;
-    // Find usb - examples:
-    //   pci:  /pci@i0cf8/usb@1,2/storage@1/channel@0/disk@0,0
-    //   mmio: /sysbus-xhci@00000000fe900000/storage@1/channel@0/disk@0,0
+    // usb drive path
     char desc[256], *p;
 
     if (usbdev->hub->cntl->pci)
@@ -442,7 +440,6 @@ int bootprio_find_usb(struct usbdevice_s *usbdev, int lun)
     int ret = find_prio(desc);
     if (ret >= 0)
         return ret;
-    // Try usb-host/redir - for example: /pci@i0cf8/usb@1,2/usb-host@1
     snprintf(p, desc+sizeof(desc)-p, "/usb-*@%x", usb_portmap(usbdev));
     return find_prio(desc);
 }
@@ -461,6 +458,9 @@ static int DefaultFloppyPrio = 101;
 static int DefaultCDPrio     = 102;
 static int DefaultHDPrio     = 103;
 static int DefaultBEVPrio    = 104;
+
+static u8 SetupBootOrder[3];
+static int SetupBootOrderActive;
 
 void
 boot_init(void)
@@ -495,6 +495,22 @@ boot_init(void)
     loadBiosGeometry();
 }
 
+void
+boot_get_order(u8 order[3])
+{
+    order[0] = order[1] = order[2] = 0;
+    if (!CONFIG_QEMU)
+        return;
+
+    u32 bootorder = (rtc_read(CMOS_BIOS_BOOTFLAG2)
+                     | ((rtc_read(CMOS_BIOS_BOOTFLAG1) & 0xf0) << 4));
+    int i;
+    for (i = 0; i < 3; i++) {
+        order[i] = bootorder & 0x0f;
+        bootorder >>= 4;
+    }
+}
+
 
 /****************************************************************
  * BootList handling
@@ -520,6 +536,110 @@ static struct hlist_head BootList VARVERIFY32INIT;
 #define IPL_TYPE_BEV         0x80
 #define IPL_TYPE_BCV         0x81
 #define IPL_TYPE_HALT        0xf0
+
+static int
+boot_setup_class(int type)
+{
+    switch (type) {
+    case IPL_TYPE_FLOPPY:
+        return BOOT_ORDER_FLOPPY;
+    case IPL_TYPE_HARDDISK:
+    case IPL_TYPE_BCV:
+        return BOOT_ORDER_HD;
+    case IPL_TYPE_CDROM:
+        return BOOT_ORDER_CD;
+    case IPL_TYPE_BEV:
+        return BOOT_ORDER_BEV;
+    default:
+        return BOOT_ORDER_NONE;
+    }
+}
+
+static int
+boot_setup_rank(int type, const u8 order[3])
+{
+    int cls = boot_setup_class(type);
+    int i;
+    for (i = 0; i < 3; i++)
+        if (order[i] == cls && cls != BOOT_ORDER_NONE)
+            return i;
+    return 3;
+}
+
+static int
+boot_setup_enabled(int type)
+{
+    if (!SetupBootOrderActive)
+        return 1;
+    return boot_setup_rank(type, SetupBootOrder) < 3;
+}
+
+static void
+boot_setup_insert(struct bootentry_s *be, const u8 order[3])
+{
+    int berank = boot_setup_rank(be->type, order);
+    struct hlist_node **pprev;
+    struct bootentry_s *pos;
+    hlist_for_each_entry_pprev(pos, pprev, &BootList, node) {
+        int posrank = boot_setup_rank(pos->type, order);
+        if (berank < posrank)
+            break;
+        if (berank > posrank)
+            continue;
+        if (be->priority < pos->priority)
+            break;
+        if (be->priority > pos->priority)
+            continue;
+        if (be->type < pos->type)
+            break;
+        if (be->type > pos->type)
+            continue;
+        if (be->type <= IPL_TYPE_CDROM
+            && (be->drive->type < pos->drive->type
+                || (be->drive->type == pos->drive->type
+                    && be->drive->cntl_id < pos->drive->cntl_id)))
+            break;
+    }
+    hlist_add(&be->node, pprev);
+}
+
+void
+boot_set_order(const u8 order[3])
+{
+    if (!CONFIG_QEMU)
+        return;
+
+    int i;
+    for (i = 0; i < 3; i++)
+        SetupBootOrder[i] = order[i];
+    SetupBootOrderActive = 1;
+
+    u8 flag1 = rtc_read(CMOS_BIOS_BOOTFLAG1);
+    rtc_write(CMOS_BIOS_BOOTFLAG2,
+              (order[0] & 0x0f) | ((order[1] & 0x0f) << 4));
+    rtc_write(CMOS_BIOS_BOOTFLAG1,
+              (flag1 & 0x0f) | ((order[2] & 0x0f) << 4));
+
+    // Setup runs only after device-enumeration threads have completed.
+    // Rebuild the already registered boot entries according to the selected
+    // classes.  Classes omitted by a None terminator are not retained.
+    struct hlist_head old = { };
+    while (BootList.first) {
+        struct hlist_node *node = BootList.first;
+        hlist_del(node);
+        hlist_add_head(node, &old);
+    }
+    while (old.first) {
+        struct hlist_node *node = old.first;
+        hlist_del(node);
+        struct bootentry_s *be = container_of(node, struct bootentry_s, node);
+        if (!boot_setup_enabled(be->type)) {
+            free(be);
+            continue;
+        }
+        boot_setup_insert(be, order);
+    }
+}
 
 static void
 bootentry_add(int type, int prio, u32 data, const char *desc)
@@ -748,16 +868,12 @@ interactive_bootmenu(void)
         printf("\nt. TPM Configuration\n");
     }
 
-    // Get key press.  If the menu key is ESC, do not restart boot unless
-    // 1.5 seconds have passed.  Otherwise users (trained by years of
-    // repeatedly hitting keys to enter the BIOS) will end up hitting ESC
-    // multiple times and immediately booting the primary boot device.
     int esc_accepted_time = irqtimer_calc(menukey == 1 ? 1500 : 0);
     for (;;) {
         int keystroke = get_keystroke_full(1000);
         if (keystroke == 0x011b && !irqtimer_check(esc_accepted_time))
             continue;
-        if (keystroke < 0) // timeout
+        if (keystroke < 0)
             continue;
 
         scan_code = keystroke >> 8;
@@ -767,7 +883,6 @@ interactive_bootmenu(void)
             tpm_menu();
         }
         if (scan_code == 1) {
-            // ESC
             printf("\n");
             return;
         }
@@ -787,7 +902,6 @@ interactive_bootmenu(void)
     }
     printf("\n");
 
-    // Find entry and make top priority.
     hlist_del(&boot->node);
     boot->priority = 0;
     hlist_add_head(&boot->node, &BootList);
@@ -830,6 +944,8 @@ bcv_prepboot(void)
     // Map drives and populate BEV list
     struct bootentry_s *pos;
     hlist_for_each_entry(pos, &BootList, node) {
+        if (!boot_setup_enabled(pos->type))
+            continue;
         switch (pos->type) {
         case IPL_TYPE_BCV:
             call_bcv(pos->vector.seg, pos->vector.offset);
@@ -852,9 +968,12 @@ bcv_prepboot(void)
         }
     }
 
-    // If nothing added a floppy/hd boot - add it manually.
-    add_bev(IPL_TYPE_FLOPPY, 0);
-    add_bev(IPL_TYPE_HARDDISK, 0);
+    // Preserve SeaBIOS's historical fallback only when Setup has not supplied
+    // a strict boot sequence.  In Setup, None terminates the sequence.
+    if (!SetupBootOrderActive) {
+        add_bev(IPL_TYPE_FLOPPY, 0);
+        add_bev(IPL_TYPE_HARDDISK, 0);
+    }
 }
 
 
@@ -862,7 +981,6 @@ bcv_prepboot(void)
  * Boot code (int 18/19)
  ****************************************************************/
 
-// Jump to a bootup entry point.
 static void
 call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
 {
@@ -871,19 +989,16 @@ call_boot_entry(struct segoff_s bootsegip, u8 bootdrv)
     memset(&br, 0, sizeof(br));
     br.flags = F_IF;
     br.code = bootsegip;
-    // Set the magic number in ax and the boot drive in dl.
     br.dl = bootdrv;
     br.ax = 0xaa55;
     farcall16(&br);
 }
 
-// Boot from a disk (either floppy or harddrive)
 static void
 boot_disk(u8 bootdrv, int checksig)
 {
     u16 bootseg = 0x07c0;
 
-    // Read sector
     struct bregs br;
     memset(&br, 0, sizeof(br));
     br.flags = F_IF;
@@ -909,14 +1024,12 @@ boot_disk(u8 bootdrv, int checksig)
 
     tpm_add_bcv(bootdrv, MAKE_FLATPTR(bootseg, 0), 512);
 
-    /* Canonicalize bootseg:bootip */
     u16 bootip = (bootseg & 0x0fff) << 4;
     bootseg &= 0xf000;
 
     call_boot_entry(SEGOFF(bootseg, bootip), bootdrv);
 }
 
-// Boot from a CD-ROM
 static void
 boot_cdrom(struct drive_s *drive)
 {
@@ -935,14 +1048,12 @@ boot_cdrom(struct drive_s *drive)
 
     tpm_add_cdrom(bootdrv, MAKE_FLATPTR(bootseg, 0), 512);
 
-    /* Canonicalize bootseg:bootip */
     u16 bootip = (bootseg & 0x0fff) << 4;
     bootseg &= 0xf000;
 
     call_boot_entry(SEGOFF(bootseg, bootip), bootdrv);
 }
 
-// Boot from a CBFS payload
 static void
 boot_cbfs(struct cbfs_file *file)
 {
@@ -952,7 +1063,6 @@ boot_cbfs(struct cbfs_file *file)
     cbfs_run_payload(file);
 }
 
-// Boot from a BEV entry on an optionrom.
 static void
 boot_rom(u32 vector)
 {
@@ -962,7 +1072,6 @@ boot_rom(u32 vector)
     call_boot_entry(so, 0);
 }
 
-// Unable to find bootable device - warn user and eventually retry.
 static void
 boot_fail(void)
 {
@@ -971,7 +1080,6 @@ boot_fail(void)
     else
         printf("No bootable device.  Retrying in %d seconds.\n"
                , BootRetryTime/1000);
-    // Wait for 'BootRetryTime' milliseconds and then reboot.
     u32 end = irqtimer_calc(BootRetryTime);
     for (;;) {
         if (BootRetryTime != (u32)-1 && irqtimer_check(end))
@@ -982,7 +1090,6 @@ boot_fail(void)
     reset();
 }
 
-// Determine next boot method and attempt a boot using it.
 static void
 do_boot(int seq_nr)
 {
@@ -992,7 +1099,6 @@ do_boot(int seq_nr)
     if (seq_nr >= BEVCount)
         boot_fail();
 
-    // Boot the given BEV type.
     struct bev_s *ie = &BEV[seq_nr];
     switch (ie->type) {
     case IPL_TYPE_FLOPPY:
@@ -1017,7 +1123,6 @@ do_boot(int seq_nr)
         break;
     }
 
-    // Boot failed: invoke the boot recovery function
     struct bregs br;
     memset(&br, 0, sizeof(br));
     br.flags = F_IF;
@@ -1026,7 +1131,6 @@ do_boot(int seq_nr)
 
 int BootSequence VARLOW = -1;
 
-// Boot Failure recovery: try the next device.
 void VISIBLE32FLAT
 handle_18(void)
 {
@@ -1036,7 +1140,6 @@ handle_18(void)
     do_boot(seq);
 }
 
-// INT 19h Boot Load Service Entry Point
 void VISIBLE32FLAT
 handle_19(void)
 {

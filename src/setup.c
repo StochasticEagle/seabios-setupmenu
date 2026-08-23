@@ -6,20 +6,163 @@
 
 #include "bregs.h" // struct bregs
 #include "config.h" // CONFIG_*
+#include "fw/paravirt.h" // RamSize
+#include "hw/rtc.h" // rtc_read
 #include "output.h" // printf
 #include "romfile.h" // romfile_loadbool
 #include "setup.h"
 #include "stacks.h" // call16_int
 #include "string.h" // memset
 #include "util.h" // get_keystroke_full
+#include "hw/ata.h" // struct atadrive_s
+#include "x86.h" // cpuid
 
-#define SETUP_FWCFG_PATH "opt/org.seabios/setup"
+// setup.c must call the normal boot registration functions after recording
+// the device.  ata.h redirects ATA's registration calls to the hooks below.
+#undef boot_add_hd
+#undef boot_add_cd
+
+#define SETUP_FWCFG_PATH "opt/seabios/setup"
 
 #define KEY_ESC     0x011b
 #define KEY_ENTER   0x1c0d
+#define KEY_F2      0x3c00
+#define KEY_F10     0x4400
 #define KEY_UP      0x4800
 #define KEY_DOWN    0x5000
-#define KEY_F10     0x4400
+
+#define SETUP_BACK     0
+#define SETUP_SAVE     1
+#define SETUP_DISCARD  2
+
+#define SETUP_TIMEOUT_0       0
+#define SETUP_TIMEOUT_2       1
+#define SETUP_TIMEOUT_5       2
+#define SETUP_TIMEOUT_10      3
+#define SETUP_TIMEOUT_30      4
+#define SETUP_TIMEOUT_KEY     5
+#define SETUP_TIMEOUT_COUNT   6
+#define SETUP_TIMEOUT_DEFAULT SETUP_TIMEOUT_5
+
+// Bits 1-3 of CMOS_BIOS_BOOTFLAG1 are unused by QEMU's standard PC boot
+// encoding.  A zero field means "not initialized", which deliberately maps
+// to the 5 second default.  Stored values 1-6 encode the six choices above.
+#define SETUP_TIMEOUT_CMOS_MASK 0x0e
+
+#define TEXT_VRAM       ((u16*)0x000b8000)
+#define TEXT_COLS       80
+#define TEXT_ROWS       25
+#define TEXT_CELLS      (TEXT_COLS * TEXT_ROWS)
+#define TEXT_BLANK      0x0720
+#define TEXT_BLUE_BLANK 0x1f20
+#define TEXT_BLUE       0x1f
+#define TEXT_BLUE_GRAY  0x17
+#define TEXT_BLUE_BLINK 0x9f
+
+struct setup_ata_slot {
+    struct drive_s *drive;
+    const char *description;
+};
+
+static struct setup_ata_slot SetupAta[2][2];
+
+static void
+setup_record_ata(struct drive_s *drive, const char *desc)
+{
+    struct atadrive_s *adrive = container_of(drive, struct atadrive_s, drive);
+    u8 ataid = adrive->chan_gf->ataid;
+    u8 slave = adrive->slave;
+
+    if (ataid >= ARRAY_SIZE(SetupAta) || slave >= ARRAY_SIZE(SetupAta[0]))
+        return;
+    SetupAta[ataid][slave].drive = drive;
+    SetupAta[ataid][slave].description = desc;
+}
+
+void
+ata_inventory_add_hd(struct drive_s *drive, const char *desc, int prio)
+{
+    setup_record_ata(drive, desc);
+    boot_add_hd(drive, desc, prio);
+}
+
+void
+ata_inventory_add_cd(struct drive_s *drive, const char *desc, int prio)
+{
+    setup_record_ata(drive, desc);
+    boot_add_cd(drive, desc, prio);
+}
+
+static int
+setup_timeout_get(void)
+{
+    u8 encoded = (rtc_read(CMOS_BIOS_BOOTFLAG1) & SETUP_TIMEOUT_CMOS_MASK) >> 1;
+    if (encoded < 1 || encoded > SETUP_TIMEOUT_COUNT)
+        return SETUP_TIMEOUT_DEFAULT;
+    return encoded - 1;
+}
+
+static void
+setup_timeout_set(int timeout)
+{
+    if (timeout < 0 || timeout >= SETUP_TIMEOUT_COUNT)
+        timeout = SETUP_TIMEOUT_DEFAULT;
+    u8 flag1 = rtc_read(CMOS_BIOS_BOOTFLAG1);
+    flag1 &= ~SETUP_TIMEOUT_CMOS_MASK;
+    flag1 |= (timeout + 1) << 1;
+    rtc_write(CMOS_BIOS_BOOTFLAG1, flag1);
+}
+
+static const char *
+setup_timeout_name(int timeout)
+{
+    switch (timeout) {
+    case SETUP_TIMEOUT_0:   return "0 seconds";
+    case SETUP_TIMEOUT_2:   return "2 seconds";
+    case SETUP_TIMEOUT_5:   return "5 seconds";
+    case SETUP_TIMEOUT_10:  return "10 seconds";
+    case SETUP_TIMEOUT_30:  return "30 seconds";
+    case SETUP_TIMEOUT_KEY: return "Press key to boot";
+    default:                return "5 seconds";
+    }
+}
+
+static int
+setup_timeout_msec(int timeout)
+{
+    switch (timeout) {
+    case SETUP_TIMEOUT_0:  return 0;
+    case SETUP_TIMEOUT_2:  return 2000;
+    case SETUP_TIMEOUT_5:  return 5000;
+    case SETUP_TIMEOUT_10: return 10000;
+    case SETUP_TIMEOUT_30: return 30000;
+    default:               return -1;
+    }
+}
+
+int
+setup_prompt(void)
+{
+    int timeout = setup_timeout_get();
+    int wait = setup_timeout_msec(timeout);
+    if (!wait)
+        return 0;
+
+    while (get_keystroke_full(0) >= 0)
+        ;
+
+    int key;
+    if (timeout == SETUP_TIMEOUT_KEY) {
+        printf("Press F2 to enter Setup, or any other key to boot.\n");
+        do {
+            key = get_keystroke_full(1000);
+        } while (key < 0);
+    } else {
+        printf("Press F2 to enter Setup (%u seconds).\n", wait / 1000);
+        key = get_keystroke_full(wait);
+    }
+    return key == KEY_F2;
+}
 
 static void
 setup_int10(struct bregs *br)
@@ -50,9 +193,83 @@ setup_set_cursor(u8 row, u8 col)
 }
 
 static void
+setup_hide_cursor(void)
+{
+    struct bregs br;
+    memset(&br, 0, sizeof(br));
+    br.ah = 0x01;
+    br.ch = 0x20;
+    br.cl = 0;
+    setup_int10(&br);
+}
+
+static void
+setup_show_cursor(void)
+{
+    struct bregs br;
+    memset(&br, 0, sizeof(br));
+    br.ah = 0x01;
+    br.ch = 0x06;
+    br.cl = 0x07;
+    setup_int10(&br);
+}
+
+static void
+setup_enable_blink(void)
+{
+    struct bregs br;
+    memset(&br, 0, sizeof(br));
+    br.ax = 0x1003;
+    br.bh = 0;
+    br.bl = 1;
+    setup_int10(&br);
+}
+
+static void
 setup_clear_screen(void)
 {
     setup_set_mode3();
+    setup_enable_blink();
+    setup_hide_cursor();
+}
+
+static void
+setup_fill_blue_area(void)
+{
+    int row, col;
+    for (row = 2; row < 22; row++)
+        for (col = 0; col < TEXT_COLS; col++)
+            TEXT_VRAM[row * TEXT_COLS + col] = TEXT_BLUE_BLANK;
+}
+
+static void
+setup_set_attr(u8 row, u8 col, int len, u8 attr)
+{
+    int i;
+    for (i = 0; i < len && col + i < TEXT_COLS; i++) {
+        u16 *cell = &TEXT_VRAM[row * TEXT_COLS + col + i];
+        *cell = (*cell & 0x00ff) | ((u16)attr << 8);
+    }
+}
+
+static void
+setup_mark_selected(u8 row, u8 col)
+{
+    u16 *cell = &TEXT_VRAM[row * TEXT_COLS + col];
+    *cell = ((u16)TEXT_BLUE_BLINK << 8) | ('>' & 0xff);
+}
+
+static void
+setup_blank_screen(void)
+{
+    // Blank the visible 80x25 page with normal text attributes.  Clearing
+    // the bytes to zero would leave attribute 0x00 (black on black), which
+    // can make subsequent SeaBIOS or DOS output appear to hang invisibly.
+    int i;
+    for (i = 0; i < TEXT_CELLS; i++)
+        TEXT_VRAM[i] = TEXT_BLANK;
+    setup_set_cursor(0, 0);
+    setup_show_cursor();
 }
 
 static void
@@ -66,51 +283,366 @@ static void
 setup_draw_frame(void)
 {
     setup_clear_screen();
+    setup_fill_blue_area();
     setup_write_at(0, 2, "SeaBIOS Setup Utility");
     setup_write_at(1, 0, "------------------------------------------------------------------------------");
     setup_write_at(22, 0, "------------------------------------------------------------------------------");
-    setup_write_at(23, 1, "Up/Down: Select   Enter: Open   Esc: Exit   F10: Save and Exit");
+    setup_write_at(23, 1, "Up/Down: Select  +/-: Change  Enter: Open  Esc: Back/Exit  F10: Save/Exit");
+}
+
+static u8
+bcd_to_bin(u8 value)
+{
+    return (value >> 4) * 10 + (value & 0x0f);
+}
+
+static u8
+setup_rtc_value(u8 value, u8 statusb)
+{
+    if (statusb & RTC_B_BIN)
+        return value;
+    return bcd_to_bin(value);
+}
+
+static void
+setup_get_datetime(char *date, int datesize, char *time, int timesize)
+{
+    if (rtc_updating()) {
+        snprintf(date, datesize, "Unavailable");
+        snprintf(time, timesize, "Unavailable");
+        return;
+    }
+
+    u8 statusb = rtc_read(CMOS_STATUS_B);
+    u8 second = setup_rtc_value(rtc_read(CMOS_RTC_SECONDS), statusb);
+    u8 minute = setup_rtc_value(rtc_read(CMOS_RTC_MINUTES), statusb);
+    u8 hour = rtc_read(CMOS_RTC_HOURS);
+    u8 day = setup_rtc_value(rtc_read(CMOS_RTC_DAY_MONTH), statusb);
+    u8 month = setup_rtc_value(rtc_read(CMOS_RTC_MONTH), statusb);
+    u8 year = setup_rtc_value(rtc_read(CMOS_RTC_YEAR), statusb);
+    u8 century = setup_rtc_value(rtc_read(CMOS_CENTURY), statusb);
+
+    if (!(statusb & RTC_B_24HR)) {
+        u8 pm = hour & 0x80;
+        hour &= 0x7f;
+        hour = setup_rtc_value(hour, statusb);
+        if (pm && hour < 12)
+            hour += 12;
+        else if (!pm && hour == 12)
+            hour = 0;
+    } else {
+        hour = setup_rtc_value(hour, statusb);
+    }
+
+    snprintf(date, datesize, "%02u/%02u/%02u%02u"
+             , month, day, century, year);
+    // SeaBIOS's formatter does not implement the libc '0' width flag, so
+    // emit each time digit explicitly to guarantee HH:MM:SS formatting.
+    snprintf(time, timesize, "%u%u:%u%u:%u%u"
+             , hour / 10, hour % 10, minute / 10, minute % 10
+             , second / 10, second % 10);
+}
+
+static void
+setup_update_datetime(void)
+{
+    char date[16], time[16], line[40];
+    setup_get_datetime(date, sizeof(date), time, sizeof(time));
+
+    snprintf(line, sizeof(line), "System Date:     %s", date);
+    setup_write_at(5, 5, line);
+    setup_set_attr(5, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
+    snprintf(line, sizeof(line), "System Time:     %s", time);
+    setup_write_at(6, 5, line);
+    setup_set_attr(6, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
+}
+
+static void
+setup_get_cpu_name(char *buf, int size)
+{
+    u32 eax, ebx, ecx, edx;
+    cpuid(0x80000000, &eax, &ebx, &ecx, &edx);
+    if (eax >= 0x80000004 && size >= 49) {
+        int offset = 0;
+        u32 leaf;
+        for (leaf = 0x80000002; leaf <= 0x80000004; leaf++) {
+            cpuid(leaf, &eax, &ebx, &ecx, &edx);
+            memcpy(buf + offset, &eax, 4); offset += 4;
+            memcpy(buf + offset, &ebx, 4); offset += 4;
+            memcpy(buf + offset, &ecx, 4); offset += 4;
+            memcpy(buf + offset, &edx, 4); offset += 4;
+        }
+        buf[48] = 0;
+
+        char *start = buf;
+        while (*start == ' ')
+            start++;
+        if (start != buf)
+            memmove(buf, start, strlen(start) + 1);
+        int len = strlen(buf);
+        while (len && buf[len - 1] == ' ')
+            buf[--len] = 0;
+        return;
+    }
+
+    cpuid(0, &eax, &ebx, &ecx, &edx);
+    if (size < 13) {
+        if (size)
+            buf[0] = 0;
+        return;
+    }
+    memcpy(buf, &ebx, 4);
+    memcpy(buf + 4, &edx, 4);
+    memcpy(buf + 8, &ecx, 4);
+    buf[12] = 0;
+}
+
+static const char *
+setup_floppy_type(u8 type)
+{
+    switch (type) {
+    case 0: return "Not Present";
+    case 1: return "5.25 inch, 360 KB";
+    case 2: return "5.25 inch, 1200 KB";
+    case 3: return "3.5 inch, 720 KB";
+    case 4: return "3.5 inch, 1440 KB";
+    case 5: return "3.5 inch, 2880 KB";
+    case 6: return "5.25 inch, 160 KB";
+    case 7: return "5.25 inch, 180 KB";
+    case 8: return "5.25 inch, 320 KB";
+    default: return "Unknown";
+    }
+}
+
+static const char *
+setup_ata_description(u8 ataid, u8 slave)
+{
+    const char *desc = SetupAta[ataid][slave].description;
+    return desc ? desc : "Not Present";
+}
+
+static const char *
+setup_boot_name(u8 value)
+{
+    switch (value) {
+    case BOOT_ORDER_FLOPPY: return "Floppy";
+    case BOOT_ORDER_HD:     return "Hard Disk";
+    case BOOT_ORDER_CD:     return "CD-ROM";
+    case BOOT_ORDER_BEV:    return "Network / Option ROM";
+    default:                return "None";
+    }
+}
+
+static int
+setup_boot_used(const u8 order[3], int selected, u8 value)
+{
+    if (value == BOOT_ORDER_NONE)
+        return 0;
+    int i;
+    for (i = 0; i < 3; i++)
+        if (i != selected && order[i] == value)
+            return 1;
+    return 0;
+}
+
+static void
+setup_boot_cycle(u8 order[3], int selected, int direction)
+{
+    int value = order[selected];
+    do {
+        value += direction;
+        if (value > BOOT_ORDER_BEV)
+            value = BOOT_ORDER_NONE;
+        else if (value < BOOT_ORDER_NONE)
+            value = BOOT_ORDER_BEV;
+    } while (setup_boot_used(order, selected, value));
+    order[selected] = value;
+}
+
+static void
+setup_timeout_cycle(int *timeout, int direction)
+{
+    *timeout += direction;
+    if (*timeout >= SETUP_TIMEOUT_COUNT)
+        *timeout = 0;
+    else if (*timeout < 0)
+        *timeout = SETUP_TIMEOUT_COUNT - 1;
 }
 
 static void
 setup_draw_main(int selected)
 {
-    static const char *items[] = {
-        "Main / System Information",
-        "Exit",
-    };
-    int i;
+    char cpu[49], line[80];
+    setup_get_cpu_name(cpu, sizeof(cpu));
+
+    u64 memory = (u64)RamSize + RamSizeOver4G;
+    u32 memory_mb = memory >> 20;
+    u16 cpus = qemu_get_present_cpus_count();
+    u8 floppy = CONFIG_FLOPPY ? rtc_read(CMOS_FLOPPY_DRIVE_TYPE) : 0;
 
     setup_draw_frame();
-    setup_write_at(3, 3, "BIOS Setup");
-    setup_write_at(5, 5, "Use the arrow keys to select an item.");
+    setup_write_at(3, 3, "Main");
+    setup_update_datetime();
 
-    for (i = 0; i < ARRAY_SIZE(items); i++) {
-        setup_set_cursor(8 + i * 2, 7);
-        printf("%c %s", i == selected ? '>' : ' ', items[i]);
+    snprintf(line, sizeof(line), "CPU:             %s", cpu);
+    setup_write_at(8, 5, line);
+    setup_set_attr(8, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
+    snprintf(line, sizeof(line), "Processor(s):    %u", cpus);
+    setup_write_at(9, 5, line);
+    setup_set_attr(9, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
+    snprintf(line, sizeof(line), "System Memory:   %u MB", memory_mb);
+    setup_write_at(10, 5, line);
+    setup_set_attr(10, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
+
+    snprintf(line, sizeof(line), "Primary Master:  %s", setup_ata_description(0, 0));
+    setup_write_at(12, 5, line);
+    setup_set_attr(12, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
+    snprintf(line, sizeof(line), "Primary Slave:   %s", setup_ata_description(0, 1));
+    setup_write_at(13, 5, line);
+    setup_set_attr(13, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
+    snprintf(line, sizeof(line), "Secondary Master:%s", setup_ata_description(1, 0));
+    setup_write_at(14, 5, line);
+    setup_set_attr(14, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
+    snprintf(line, sizeof(line), "Secondary Slave: %s", setup_ata_description(1, 1));
+    setup_write_at(15, 5, line);
+    setup_set_attr(15, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
+
+    snprintf(line, sizeof(line), "Floppy A:        %s"
+             , CONFIG_FLOPPY ? setup_floppy_type(floppy >> 4) : "Disabled");
+    setup_write_at(17, 5, line);
+    setup_set_attr(17, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
+    snprintf(line, sizeof(line), "Floppy B:        %s"
+             , CONFIG_FLOPPY ? setup_floppy_type(floppy & 0x0f) : "Disabled");
+    setup_write_at(18, 5, line);
+    setup_set_attr(18, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
+
+    setup_set_cursor(20, 5);
+    printf("%c Boot Configuration", selected == 0 ? '>' : ' ');
+    setup_set_cursor(21, 5);
+    printf("%c Exit Setup", selected == 1 ? '>' : ' ');
+    setup_mark_selected(selected ? 21 : 20, 5);
+}
+
+static void
+setup_draw_boot(const u8 order[3], int timeout, int selected)
+{
+    char line[80];
+    setup_draw_frame();
+    setup_write_at(3, 3, "Boot Configuration");
+
+    setup_write_at(5, 5, "F2 Startup Delay");
+    setup_write_at(6, 5, "Controls how long POST waits for F2 before booting.");
+    const char *timeout_name = setup_timeout_name(timeout);
+    snprintf(line, sizeof(line), "%c Startup Delay:  %s"
+             , selected == 0 ? '>' : ' ', timeout_name);
+    setup_write_at(7, 7, line);
+    setup_set_attr(7, 25, strlen(timeout_name), TEXT_BLUE_GRAY);
+
+    setup_write_at(10, 5, "Boot Order");
+    int i;
+    for (i = 0; i < 3; i++) {
+        const char *name = setup_boot_name(order[i]);
+        snprintf(line, sizeof(line), "%c Boot Option %u:  %s"
+                 , selected == i + 1 ? '>' : ' ', i + 1, name);
+        setup_write_at(12 + i * 2, 7, line);
+        setup_set_attr(12 + i * 2, 25, strlen(name), TEXT_BLUE_GRAY);
+    }
+
+    setup_write_at(19, 5, "Use +/- or Enter to change the selected value.");
+    setup_write_at(20, 5, "Changes remain staged until Save and Exit.");
+    setup_mark_selected(selected == 0 ? 7 : 12 + (selected - 1) * 2, 7);
+}
+
+static int
+setup_boot_page(u8 order[3], int *timeout)
+{
+    int selected = 0;
+    setup_draw_boot(order, *timeout, selected);
+    for (;;) {
+        int key = get_keystroke_full(1000);
+        int redraw = 0;
+        if (key == KEY_UP) {
+            if (selected > 0) {
+                selected--;
+                redraw = 1;
+            }
+        } else if (key == KEY_DOWN) {
+            if (selected < 3) {
+                selected++;
+                redraw = 1;
+            }
+        } else if (key == KEY_ENTER || (key & 0xff) == '+') {
+            if (selected == 0)
+                setup_timeout_cycle(timeout, 1);
+            else
+                setup_boot_cycle(order, selected - 1, 1);
+            redraw = 1;
+        } else if ((key & 0xff) == '-') {
+            if (selected == 0)
+                setup_timeout_cycle(timeout, -1);
+            else
+                setup_boot_cycle(order, selected - 1, -1);
+            redraw = 1;
+        } else if (key == KEY_ESC) {
+            return SETUP_BACK;
+        } else if (key == KEY_F10) {
+            return SETUP_SAVE;
+        }
+        if (redraw)
+            setup_draw_boot(order, *timeout, selected);
     }
 }
 
 static void
-setup_draw_system_info(void)
+setup_draw_exit(int selected)
 {
+    static const char *items[] = {
+        "Save Changes and Exit",
+        "Discard Changes and Exit",
+        "Return to Setup",
+    };
     setup_draw_frame();
-    setup_write_at(3, 3, "Main / System Information");
-    setup_write_at(6, 5, "Firmware: SeaBIOS");
-    setup_write_at(8, 5, "BIOS Setup prototype");
-    setup_write_at(20, 5, "Press Esc to return.");
+    setup_write_at(3, 3, "Exit");
+
+    int i;
+    for (i = 0; i < ARRAY_SIZE(items); i++) {
+        setup_set_cursor(8 + i * 2, 7);
+        printf("%c %s", selected == i ? '>' : ' ', items[i]);
+    }
+    setup_mark_selected(8 + selected * 2, 7);
 }
 
 static int
-setup_system_info_page(void)
+setup_exit_page(void)
 {
-    setup_draw_system_info();
+    int selected = 0;
+    setup_draw_exit(selected);
     for (;;) {
         int key = get_keystroke_full(1000);
-        if (key == KEY_ESC)
-            return 0;
-        if (key == KEY_F10)
-            return 1;
+        int redraw = 0;
+        if (key == KEY_UP) {
+            if (selected > 0) {
+                selected--;
+                redraw = 1;
+            }
+        } else if (key == KEY_DOWN) {
+            if (selected < 2) {
+                selected++;
+                redraw = 1;
+            }
+        } else if (key == KEY_ENTER) {
+            if (selected == 0)
+                return SETUP_SAVE;
+            if (selected == 1)
+                return SETUP_DISCARD;
+            return SETUP_BACK;
+        } else if (key == KEY_ESC) {
+            return SETUP_BACK;
+        } else if (key == KEY_F10) {
+            return SETUP_SAVE;
+        }
+        if (redraw)
+            setup_draw_exit(selected);
     }
 }
 
@@ -128,33 +660,57 @@ setup_run(void)
     if (!CONFIG_QEMU)
         return;
 
+    u8 order[3];
+    boot_get_order(order);
+    int i;
+    for (i = 0; i < 3; i++)
+        if (order[i] > BOOT_ORDER_BEV)
+            order[i] = BOOT_ORDER_NONE;
+    int timeout = setup_timeout_get();
+
     int selected = 0;
     setup_draw_main(selected);
-
     for (;;) {
         int key = get_keystroke_full(1000);
-        switch (key) {
-        case KEY_UP:
-            if (selected > 0)
+        if (key < 0) {
+            // Refresh only the two RTC fields.  Do not reset mode 3 or redraw
+            // the page, because repeated VGA mode sets visibly flash in QEMU.
+            setup_update_datetime();
+            setup_mark_selected(selected ? 21 : 20, 5);
+        } else if (key == KEY_UP) {
+            if (selected > 0) {
                 selected--;
-            setup_draw_main(selected);
-            break;
-        case KEY_DOWN:
-            if (selected < 1)
-                selected++;
-            setup_draw_main(selected);
-            break;
-        case KEY_ENTER:
-            if (selected == 0) {
-                if (setup_system_info_page())
-                    return;
                 setup_draw_main(selected);
-            } else {
+            }
+        } else if (key == KEY_DOWN) {
+            if (selected < 1) {
+                selected++;
+                setup_draw_main(selected);
+            }
+        } else if (key == KEY_ENTER) {
+            int action;
+            if (selected == 0)
+                action = setup_boot_page(order, &timeout);
+            else
+                action = setup_exit_page();
+            if (action == SETUP_SAVE) {
+                boot_set_order(order);
+                setup_timeout_set(timeout);
+                setup_blank_screen();
                 return;
             }
-            break;
-        case KEY_ESC:
-        case KEY_F10:
+            if (action == SETUP_DISCARD) {
+                setup_blank_screen();
+                return;
+            }
+            setup_draw_main(selected);
+        } else if (key == KEY_ESC) {
+            setup_blank_screen();
+            return;
+        } else if (key == KEY_F10) {
+            boot_set_order(order);
+            setup_timeout_set(timeout);
+            setup_blank_screen();
             return;
         }
     }

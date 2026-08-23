@@ -516,12 +516,16 @@ static int ahci_port_setup(struct ahci_port_s *port)
         port->drive.sectors = sectors;
         u64 adjsize = sectors >> 11;
         char adjprefix = 'M';
-        if (adjsize >= (1 << 16)) {
+        if (adjsize >= (1 << 10)) {
             adjsize >>= 10;
             adjprefix = 'G';
         }
+        if (adjsize >= (1 << 10)) {
+            adjsize >>= 10;
+            adjprefix = 'T';
+        }
         port->desc = znprintf(MAXDESCSIZE
-                              , "AHCI/%d: %s ATA-%d Hard-Disk (%u %cBytes)"
+                              , "AHCI/%d: %s ATA-%d Hard-Disk (%u %cB)"
                               , port->pnr
                               , ata_extract_model(model, MAXMODEL, buffer)
                               , ata_extract_version(buffer)

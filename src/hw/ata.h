@@ -29,6 +29,12 @@ int ata_process_op(struct disk_op_s *op);
 int ata_atapi_process_op(struct disk_op_s *op);
 void ata_setup(void);
 
+// BIOS Setup observes ATA devices at their existing registration point.
+void ata_inventory_add_hd(struct drive_s *drive, const char *desc, int prio);
+void ata_inventory_add_cd(struct drive_s *drive, const char *desc, int prio);
+#define boot_add_hd ata_inventory_add_hd
+#define boot_add_cd ata_inventory_add_cd
+
 #define PORT_ATA2_CMD_BASE     0x0170
 #define PORT_ATA1_CMD_BASE     0x01f0
 #define PORT_ATA2_CTRL_BASE    0x0374

@@ -17,7 +17,14 @@ int bmp_show(struct bmp_decdata *bmp, unsigned char *pic, int width
              , int height, int depth, int bytes_per_line_dest);
 
 // boot.c
+#define BOOT_ORDER_NONE     0
+#define BOOT_ORDER_FLOPPY   1
+#define BOOT_ORDER_HD       2
+#define BOOT_ORDER_CD       3
+#define BOOT_ORDER_BEV      4
 void boot_init(void);
+void boot_get_order(u8 order[3]);
+void boot_set_order(const u8 order[3]);
 void boot_add_bev(u16 seg, u16 bev, u16 desc, int prio);
 void boot_add_bcv(u16 seg, u16 ip, u16 desc, int prio);
 struct drive_s;
