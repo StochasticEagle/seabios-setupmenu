@@ -34,6 +34,9 @@
 #define SETUP_SAVE     1
 #define SETUP_DISCARD  2
 
+#define TEXT_VRAM      ((void*)0x000b8000)
+#define TEXT_VRAM_SIZE (80 * 25 * 2)
+
 struct setup_ata_slot {
     struct drive_s *drive;
     const char *description;
@@ -100,6 +103,15 @@ static void
 setup_clear_screen(void)
 {
     setup_set_mode3();
+}
+
+static void
+setup_blank_screen(void)
+{
+    // Setup always uses VGA color text mode 3, whose visible 80x25 page is
+    // the first 4000 bytes at physical address 0xb8000.
+    memset(TEXT_VRAM, 0, TEXT_VRAM_SIZE);
+    setup_set_cursor(0, 0);
 }
 
 static void
@@ -170,6 +182,18 @@ setup_get_datetime(char *date, int datesize, char *time, int timesize)
     snprintf(time, timesize, "%u%u:%u%u:%u%u"
              , hour / 10, hour % 10, minute / 10, minute % 10
              , second / 10, second % 10);
+}
+
+static void
+setup_update_datetime(void)
+{
+    char date[16], time[16], line[40];
+    setup_get_datetime(date, sizeof(date), time, sizeof(time));
+
+    snprintf(line, sizeof(line), "System Date:     %s", date);
+    setup_write_at(5, 5, line);
+    snprintf(line, sizeof(line), "System Time:     %s", time);
+    setup_write_at(6, 5, line);
 }
 
 static void
@@ -277,8 +301,7 @@ setup_boot_cycle(u8 order[3], int selected, int direction)
 static void
 setup_draw_main(int selected)
 {
-    char date[16], time[16], cpu[49], line[80];
-    setup_get_datetime(date, sizeof(date), time, sizeof(time));
+    char cpu[49], line[80];
     setup_get_cpu_name(cpu, sizeof(cpu));
 
     u64 memory = (u64)RamSize + RamSizeOver4G;
@@ -288,11 +311,7 @@ setup_draw_main(int selected)
 
     setup_draw_frame();
     setup_write_at(3, 3, "Main");
-
-    snprintf(line, sizeof(line), "System Date:     %s", date);
-    setup_write_at(5, 5, line);
-    snprintf(line, sizeof(line), "System Time:     %s", time);
-    setup_write_at(6, 5, line);
+    setup_update_datetime();
 
     snprintf(line, sizeof(line), "CPU:             %s", cpu);
     setup_write_at(8, 5, line);
@@ -345,24 +364,33 @@ static int
 setup_boot_page(u8 order[3])
 {
     int selected = 0;
+    setup_draw_boot(order, selected);
     for (;;) {
-        setup_draw_boot(order, selected);
         int key = get_keystroke_full(1000);
+        int redraw = 0;
         if (key == KEY_UP) {
-            if (selected > 0)
+            if (selected > 0) {
                 selected--;
+                redraw = 1;
+            }
         } else if (key == KEY_DOWN) {
-            if (selected < 2)
+            if (selected < 2) {
                 selected++;
+                redraw = 1;
+            }
         } else if (key == KEY_ENTER || (key & 0xff) == '+') {
             setup_boot_cycle(order, selected, 1);
+            redraw = 1;
         } else if ((key & 0xff) == '-') {
             setup_boot_cycle(order, selected, -1);
+            redraw = 1;
         } else if (key == KEY_ESC) {
             return SETUP_BACK;
         } else if (key == KEY_F10) {
             return SETUP_SAVE;
         }
+        if (redraw)
+            setup_draw_boot(order, selected);
     }
 }
 
@@ -388,15 +416,20 @@ static int
 setup_exit_page(void)
 {
     int selected = 0;
+    setup_draw_exit(selected);
     for (;;) {
-        setup_draw_exit(selected);
         int key = get_keystroke_full(1000);
+        int redraw = 0;
         if (key == KEY_UP) {
-            if (selected > 0)
+            if (selected > 0) {
                 selected--;
+                redraw = 1;
+            }
         } else if (key == KEY_DOWN) {
-            if (selected < 2)
+            if (selected < 2) {
                 selected++;
+                redraw = 1;
+            }
         } else if (key == KEY_ENTER) {
             if (selected == 0)
                 return SETUP_SAVE;
@@ -408,6 +441,8 @@ setup_exit_page(void)
         } else if (key == KEY_F10) {
             return SETUP_SAVE;
         }
+        if (redraw)
+            setup_draw_exit(selected);
     }
 }
 
@@ -433,15 +468,23 @@ setup_run(void)
             order[i] = BOOT_ORDER_NONE;
 
     int selected = 0;
+    setup_draw_main(selected);
     for (;;) {
-        setup_draw_main(selected);
         int key = get_keystroke_full(1000);
-        if (key == KEY_UP) {
-            if (selected > 0)
+        if (key < 0) {
+            // Refresh only the two RTC fields.  Do not reset mode 3 or redraw
+            // the page, because repeated VGA mode sets visibly flash in QEMU.
+            setup_update_datetime();
+        } else if (key == KEY_UP) {
+            if (selected > 0) {
                 selected--;
+                setup_draw_main(selected);
+            }
         } else if (key == KEY_DOWN) {
-            if (selected < 1)
+            if (selected < 1) {
                 selected++;
+                setup_draw_main(selected);
+            }
         } else if (key == KEY_ENTER) {
             int action;
             if (selected == 0)
@@ -450,14 +493,20 @@ setup_run(void)
                 action = setup_exit_page();
             if (action == SETUP_SAVE) {
                 boot_set_order(order);
+                setup_blank_screen();
                 return;
             }
-            if (action == SETUP_DISCARD)
+            if (action == SETUP_DISCARD) {
+                setup_blank_screen();
                 return;
+            }
+            setup_draw_main(selected);
         } else if (key == KEY_ESC) {
+            setup_blank_screen();
             return;
         } else if (key == KEY_F10) {
             boot_set_order(order);
+            setup_blank_screen();
             return;
         }
     }
