@@ -34,9 +34,14 @@
 #define SETUP_SAVE     1
 #define SETUP_DISCARD  2
 
-#define TEXT_VRAM      ((u16*)0x000b8000)
-#define TEXT_CELLS     (80 * 25)
-#define TEXT_BLANK     0x0720
+#define TEXT_VRAM       ((u16*)0x000b8000)
+#define TEXT_COLS       80
+#define TEXT_ROWS       25
+#define TEXT_CELLS      (TEXT_COLS * TEXT_ROWS)
+#define TEXT_BLANK      0x0720
+#define TEXT_BLUE_BLANK 0x1f20
+#define TEXT_BLUE       0x1f
+#define TEXT_BLUE_BLINK 0x9f
 
 struct setup_ata_slot {
     struct drive_s *drive;
@@ -101,9 +106,60 @@ setup_set_cursor(u8 row, u8 col)
 }
 
 static void
+setup_hide_cursor(void)
+{
+    struct bregs br;
+    memset(&br, 0, sizeof(br));
+    br.ah = 0x01;
+    br.ch = 0x20;
+    br.cl = 0;
+    setup_int10(&br);
+}
+
+static void
+setup_show_cursor(void)
+{
+    struct bregs br;
+    memset(&br, 0, sizeof(br));
+    br.ah = 0x01;
+    br.ch = 0x06;
+    br.cl = 0x07;
+    setup_int10(&br);
+}
+
+static void
+setup_enable_blink(void)
+{
+    struct bregs br;
+    memset(&br, 0, sizeof(br));
+    br.ax = 0x1003;
+    br.bh = 0;
+    br.bl = 1;
+    setup_int10(&br);
+}
+
+static void
 setup_clear_screen(void)
 {
     setup_set_mode3();
+    setup_enable_blink();
+    setup_hide_cursor();
+}
+
+static void
+setup_fill_blue_area(void)
+{
+    int row, col;
+    for (row = 2; row < 22; row++)
+        for (col = 0; col < TEXT_COLS; col++)
+            TEXT_VRAM[row * TEXT_COLS + col] = TEXT_BLUE_BLANK;
+}
+
+static void
+setup_mark_selected(u8 row, u8 col)
+{
+    u16 *cell = &TEXT_VRAM[row * TEXT_COLS + col];
+    *cell = ((u16)TEXT_BLUE_BLINK << 8) | ('>' & 0xff);
 }
 
 static void
@@ -116,6 +172,7 @@ setup_blank_screen(void)
     for (i = 0; i < TEXT_CELLS; i++)
         TEXT_VRAM[i] = TEXT_BLANK;
     setup_set_cursor(0, 0);
+    setup_show_cursor();
 }
 
 static void
@@ -129,6 +186,7 @@ static void
 setup_draw_frame(void)
 {
     setup_clear_screen();
+    setup_fill_blue_area();
     setup_write_at(0, 2, "SeaBIOS Setup Utility");
     setup_write_at(1, 0, "------------------------------------------------------------------------------");
     setup_write_at(22, 0, "------------------------------------------------------------------------------");
@@ -189,13 +247,7 @@ setup_get_datetime(char *date, int datesize, char *time, int timesize)
 }
 
 static void
-setup_main_cursor(int selected)
-{
-    setup_set_cursor(selected ? 21 : 20, 5);
-}
-
-static void
-setup_update_datetime(int selected)
+setup_update_datetime(void)
 {
     char date[16], time[16], line[40];
     setup_get_datetime(date, sizeof(date), time, sizeof(time));
@@ -204,10 +256,6 @@ setup_update_datetime(int selected)
     setup_write_at(5, 5, line);
     snprintf(line, sizeof(line), "System Time:     %s", time);
     setup_write_at(6, 5, line);
-
-    // Writes move the VGA hardware cursor.  Put it back on the selected
-    // marker so the blinking cursor reinforces the current menu position.
-    setup_main_cursor(selected);
 }
 
 static void
@@ -325,7 +373,7 @@ setup_draw_main(int selected)
 
     setup_draw_frame();
     setup_write_at(3, 3, "Main");
-    setup_update_datetime(selected);
+    setup_update_datetime();
 
     snprintf(line, sizeof(line), "CPU:             %s", cpu);
     setup_write_at(8, 5, line);
@@ -354,7 +402,7 @@ setup_draw_main(int selected)
     printf("%c Boot Configuration", selected == 0 ? '>' : ' ');
     setup_set_cursor(21, 5);
     printf("%c Exit Setup", selected == 1 ? '>' : ' ');
-    setup_main_cursor(selected);
+    setup_mark_selected(selected ? 21 : 20, 5);
 }
 
 static void
@@ -373,7 +421,7 @@ setup_draw_boot(const u8 order[3], int selected)
         setup_write_at(9 + i * 2, 7, line);
     }
     setup_write_at(17, 5, "Changes remain staged until Save and Exit.");
-    setup_set_cursor(9 + selected * 2, 7);
+    setup_mark_selected(9 + selected * 2, 7);
 }
 
 static int
@@ -426,7 +474,7 @@ setup_draw_exit(int selected)
         setup_set_cursor(8 + i * 2, 7);
         printf("%c %s", selected == i ? '>' : ' ', items[i]);
     }
-    setup_set_cursor(8 + selected * 2, 7);
+    setup_mark_selected(8 + selected * 2, 7);
 }
 
 static int
@@ -491,7 +539,8 @@ setup_run(void)
         if (key < 0) {
             // Refresh only the two RTC fields.  Do not reset mode 3 or redraw
             // the page, because repeated VGA mode sets visibly flash in QEMU.
-            setup_update_datetime(selected);
+            setup_update_datetime();
+            setup_mark_selected(selected ? 21 : 20, 5);
         } else if (key == KEY_UP) {
             if (selected > 0) {
                 selected--;
