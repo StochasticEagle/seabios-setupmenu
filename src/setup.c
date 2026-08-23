@@ -529,26 +529,28 @@ setup_draw_boot(const u8 order[3], int timeout, int selected)
     char line[80];
     setup_draw_frame();
     setup_write_at(3, 3, "Boot Configuration");
-    setup_write_at(5, 5, "Choose boot priority and the F2 Setup prompt timeout.");
-    setup_write_at(6, 5, "Use +/- or Enter to change the selected value.");
 
+    setup_write_at(5, 5, "F2 Startup Delay");
+    setup_write_at(6, 5, "Controls how long POST waits for F2 before booting.");
+    const char *timeout_name = setup_timeout_name(timeout);
+    snprintf(line, sizeof(line), "%c Startup Delay:  %s"
+             , selected == 0 ? '>' : ' ', timeout_name);
+    setup_write_at(7, 7, line);
+    setup_set_attr(7, 25, strlen(timeout_name), TEXT_BLUE_GRAY);
+
+    setup_write_at(10, 5, "Boot Order");
     int i;
     for (i = 0; i < 3; i++) {
         const char *name = setup_boot_name(order[i]);
         snprintf(line, sizeof(line), "%c Boot Option %u:  %s"
-                 , selected == i ? '>' : ' ', i + 1, name);
-        setup_write_at(9 + i * 2, 7, line);
-        setup_set_attr(9 + i * 2, 25, strlen(name), TEXT_BLUE_GRAY);
+                 , selected == i + 1 ? '>' : ' ', i + 1, name);
+        setup_write_at(12 + i * 2, 7, line);
+        setup_set_attr(12 + i * 2, 25, strlen(name), TEXT_BLUE_GRAY);
     }
 
-    const char *timeout_name = setup_timeout_name(timeout);
-    snprintf(line, sizeof(line), "%c Setup Timeout:  %s"
-             , selected == 3 ? '>' : ' ', timeout_name);
-    setup_write_at(15, 7, line);
-    setup_set_attr(15, 25, strlen(timeout_name), TEXT_BLUE_GRAY);
-
-    setup_write_at(18, 5, "Changes remain staged until Save and Exit.");
-    setup_mark_selected(selected < 3 ? 9 + selected * 2 : 15, 7);
+    setup_write_at(19, 5, "Use +/- or Enter to change the selected value.");
+    setup_write_at(20, 5, "Changes remain staged until Save and Exit.");
+    setup_mark_selected(selected == 0 ? 7 : 12 + (selected - 1) * 2, 7);
 }
 
 static int
@@ -570,16 +572,16 @@ setup_boot_page(u8 order[3], int *timeout)
                 redraw = 1;
             }
         } else if (key == KEY_ENTER || (key & 0xff) == '+') {
-            if (selected < 3)
-                setup_boot_cycle(order, selected, 1);
-            else
+            if (selected == 0)
                 setup_timeout_cycle(timeout, 1);
+            else
+                setup_boot_cycle(order, selected - 1, 1);
             redraw = 1;
         } else if ((key & 0xff) == '-') {
-            if (selected < 3)
-                setup_boot_cycle(order, selected, -1);
-            else
+            if (selected == 0)
                 setup_timeout_cycle(timeout, -1);
+            else
+                setup_boot_cycle(order, selected - 1, -1);
             redraw = 1;
         } else if (key == KEY_ESC) {
             return SETUP_BACK;
