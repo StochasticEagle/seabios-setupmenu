@@ -27,6 +27,12 @@
 #define KEY_ESC     0x011b
 #define KEY_ENTER   0x1c0d
 #define KEY_F10     0x4400
+#define KEY_UP      0x4800
+#define KEY_DOWN    0x5000
+
+#define SETUP_BACK     0
+#define SETUP_SAVE     1
+#define SETUP_DISCARD  2
 
 struct setup_ata_slot {
     struct drive_s *drive;
@@ -110,7 +116,7 @@ setup_draw_frame(void)
     setup_write_at(0, 2, "SeaBIOS Setup Utility");
     setup_write_at(1, 0, "------------------------------------------------------------------------------");
     setup_write_at(22, 0, "------------------------------------------------------------------------------");
-    setup_write_at(23, 1, "Enter: Select   Esc: Exit   F10: Save and Exit");
+    setup_write_at(23, 1, "Up/Down: Select  +/-: Change  Enter: Open  Esc: Back/Exit  F10: Save/Exit");
 }
 
 static u8
@@ -159,7 +165,11 @@ setup_get_datetime(char *date, int datesize, char *time, int timesize)
 
     snprintf(date, datesize, "%02u/%02u/%02u%02u"
              , month, day, century, year);
-    snprintf(time, timesize, "%02u:%02u:%02u", hour, minute, second);
+    // SeaBIOS's formatter does not implement the libc '0' width flag, so
+    // emit each time digit explicitly to guarantee HH:MM:SS formatting.
+    snprintf(time, timesize, "%u%u:%u%u:%u%u"
+             , hour / 10, hour % 10, minute / 10, minute % 10
+             , second / 10, second % 10);
 }
 
 static void
@@ -226,8 +236,46 @@ setup_ata_description(u8 ataid, u8 slave)
     return desc ? desc : "Not Present";
 }
 
+static const char *
+setup_boot_name(u8 value)
+{
+    switch (value) {
+    case BOOT_ORDER_FLOPPY: return "Floppy";
+    case BOOT_ORDER_HD:     return "Hard Disk";
+    case BOOT_ORDER_CD:     return "CD-ROM";
+    case BOOT_ORDER_BEV:    return "Network / Option ROM";
+    default:                return "None";
+    }
+}
+
+static int
+setup_boot_used(const u8 order[3], int selected, u8 value)
+{
+    if (value == BOOT_ORDER_NONE)
+        return 0;
+    int i;
+    for (i = 0; i < 3; i++)
+        if (i != selected && order[i] == value)
+            return 1;
+    return 0;
+}
+
 static void
-setup_draw_main(void)
+setup_boot_cycle(u8 order[3], int selected, int direction)
+{
+    int value = order[selected];
+    do {
+        value += direction;
+        if (value > BOOT_ORDER_BEV)
+            value = BOOT_ORDER_NONE;
+        else if (value < BOOT_ORDER_NONE)
+            value = BOOT_ORDER_BEV;
+    } while (setup_boot_used(order, selected, value));
+    order[selected] = value;
+}
+
+static void
+setup_draw_main(int selected)
 {
     char date[16], time[16], cpu[49], line[80];
     setup_get_datetime(date, sizeof(date), time, sizeof(time));
@@ -269,7 +317,98 @@ setup_draw_main(void)
              , CONFIG_FLOPPY ? setup_floppy_type(floppy & 0x0f) : "Disabled");
     setup_write_at(18, 5, line);
 
-    setup_write_at(20, 5, "> Exit Setup");
+    setup_set_cursor(20, 5);
+    printf("%c Boot Configuration", selected == 0 ? '>' : ' ');
+    setup_set_cursor(21, 5);
+    printf("%c Exit Setup", selected == 1 ? '>' : ' ');
+}
+
+static void
+setup_draw_boot(const u8 order[3], int selected)
+{
+    char line[80];
+    setup_draw_frame();
+    setup_write_at(3, 3, "Boot Configuration");
+    setup_write_at(5, 5, "Choose the boot device class for each priority slot.");
+    setup_write_at(6, 5, "Use +/- or Enter to change the selected value.");
+
+    int i;
+    for (i = 0; i < 3; i++) {
+        snprintf(line, sizeof(line), "%c Boot Option %u:  %s"
+                 , selected == i ? '>' : ' ', i + 1, setup_boot_name(order[i]));
+        setup_write_at(9 + i * 2, 7, line);
+    }
+    setup_write_at(17, 5, "Changes remain staged until Save and Exit.");
+}
+
+static int
+setup_boot_page(u8 order[3])
+{
+    int selected = 0;
+    for (;;) {
+        setup_draw_boot(order, selected);
+        int key = get_keystroke_full(1000);
+        if (key == KEY_UP) {
+            if (selected > 0)
+                selected--;
+        } else if (key == KEY_DOWN) {
+            if (selected < 2)
+                selected++;
+        } else if (key == KEY_ENTER || (key & 0xff) == '+') {
+            setup_boot_cycle(order, selected, 1);
+        } else if ((key & 0xff) == '-') {
+            setup_boot_cycle(order, selected, -1);
+        } else if (key == KEY_ESC) {
+            return SETUP_BACK;
+        } else if (key == KEY_F10) {
+            return SETUP_SAVE;
+        }
+    }
+}
+
+static void
+setup_draw_exit(int selected)
+{
+    static const char *items[] = {
+        "Save Changes and Exit",
+        "Discard Changes and Exit",
+        "Return to Setup",
+    };
+    setup_draw_frame();
+    setup_write_at(3, 3, "Exit");
+
+    int i;
+    for (i = 0; i < ARRAY_SIZE(items); i++) {
+        setup_set_cursor(8 + i * 2, 7);
+        printf("%c %s", selected == i ? '>' : ' ', items[i]);
+    }
+}
+
+static int
+setup_exit_page(void)
+{
+    int selected = 0;
+    for (;;) {
+        setup_draw_exit(selected);
+        int key = get_keystroke_full(1000);
+        if (key == KEY_UP) {
+            if (selected > 0)
+                selected--;
+        } else if (key == KEY_DOWN) {
+            if (selected < 2)
+                selected++;
+        } else if (key == KEY_ENTER) {
+            if (selected == 0)
+                return SETUP_SAVE;
+            if (selected == 1)
+                return SETUP_DISCARD;
+            return SETUP_BACK;
+        } else if (key == KEY_ESC) {
+            return SETUP_BACK;
+        } else if (key == KEY_F10) {
+            return SETUP_SAVE;
+        }
+    }
 }
 
 int
@@ -286,13 +425,39 @@ setup_run(void)
     if (!CONFIG_QEMU)
         return;
 
-    setup_draw_main();
+    u8 order[3];
+    boot_get_order(order);
+    int i;
+    for (i = 0; i < 3; i++)
+        if (order[i] > BOOT_ORDER_BEV)
+            order[i] = BOOT_ORDER_NONE;
+
+    int selected = 0;
     for (;;) {
+        setup_draw_main(selected);
         int key = get_keystroke_full(1000);
-        switch (key) {
-        case KEY_ENTER:
-        case KEY_ESC:
-        case KEY_F10:
+        if (key == KEY_UP) {
+            if (selected > 0)
+                selected--;
+        } else if (key == KEY_DOWN) {
+            if (selected < 1)
+                selected++;
+        } else if (key == KEY_ENTER) {
+            int action;
+            if (selected == 0)
+                action = setup_boot_page(order);
+            else
+                action = setup_exit_page();
+            if (action == SETUP_SAVE) {
+                boot_set_order(order);
+                return;
+            }
+            if (action == SETUP_DISCARD)
+                return;
+        } else if (key == KEY_ESC) {
+            return;
+        } else if (key == KEY_F10) {
+            boot_set_order(order);
             return;
         }
     }
