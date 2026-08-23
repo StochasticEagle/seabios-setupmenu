@@ -14,13 +14,53 @@
 #include "stacks.h" // call16_int
 #include "string.h" // memset
 #include "util.h" // get_keystroke_full
+#include "hw/ata.h" // struct atadrive_s
 #include "x86.h" // cpuid
+
+// setup.c must call the normal boot registration functions after recording
+// the device.  ata.h redirects ATA's registration calls to the hooks below.
+#undef boot_add_hd
+#undef boot_add_cd
 
 #define SETUP_FWCFG_PATH "opt/org.seabios/setup"
 
 #define KEY_ESC     0x011b
 #define KEY_ENTER   0x1c0d
 #define KEY_F10     0x4400
+
+struct setup_ata_slot {
+    struct drive_s *drive;
+    const char *description;
+};
+
+static struct setup_ata_slot SetupAta[2][2];
+
+static void
+setup_record_ata(struct drive_s *drive, const char *desc)
+{
+    struct atadrive_s *adrive = container_of(drive, struct atadrive_s, drive);
+    u8 ataid = adrive->chan_gf->ataid;
+    u8 slave = adrive->slave;
+
+    if (ataid >= ARRAY_SIZE(SetupAta) || slave >= ARRAY_SIZE(SetupAta[0]))
+        return;
+    SetupAta[ataid][slave].drive = drive;
+    SetupAta[ataid][slave].description = desc;
+}
+
+void
+ata_inventory_add_hd(struct drive_s *drive, const char *desc, int prio)
+{
+    setup_record_ata(drive, desc);
+    boot_add_hd(drive, desc, prio);
+}
+
+void
+ata_inventory_add_cd(struct drive_s *drive, const char *desc, int prio)
+{
+    setup_record_ata(drive, desc);
+    boot_add_cd(drive, desc, prio);
+}
 
 static void
 setup_int10(struct bregs *br)
@@ -179,6 +219,13 @@ setup_floppy_type(u8 type)
     }
 }
 
+static const char *
+setup_ata_description(u8 ataid, u8 slave)
+{
+    const char *desc = SetupAta[ataid][slave].description;
+    return desc ? desc : "Not Present";
+}
+
 static void
 setup_draw_main(void)
 {
@@ -206,12 +253,21 @@ setup_draw_main(void)
     snprintf(line, sizeof(line), "System Memory:   %u MB", memory_mb);
     setup_write_at(10, 5, line);
 
+    snprintf(line, sizeof(line), "Primary Master:  %s", setup_ata_description(0, 0));
+    setup_write_at(12, 5, line);
+    snprintf(line, sizeof(line), "Primary Slave:   %s", setup_ata_description(0, 1));
+    setup_write_at(13, 5, line);
+    snprintf(line, sizeof(line), "Secondary Master:%s", setup_ata_description(1, 0));
+    setup_write_at(14, 5, line);
+    snprintf(line, sizeof(line), "Secondary Slave: %s", setup_ata_description(1, 1));
+    setup_write_at(15, 5, line);
+
     snprintf(line, sizeof(line), "Floppy A:        %s"
              , CONFIG_FLOPPY ? setup_floppy_type(floppy >> 4) : "Disabled");
-    setup_write_at(12, 5, line);
+    setup_write_at(17, 5, line);
     snprintf(line, sizeof(line), "Floppy B:        %s"
              , CONFIG_FLOPPY ? setup_floppy_type(floppy & 0x0f) : "Disabled");
-    setup_write_at(13, 5, line);
+    setup_write_at(18, 5, line);
 
     setup_write_at(20, 5, "> Exit Setup");
 }
