@@ -34,8 +34,9 @@
 #define SETUP_SAVE     1
 #define SETUP_DISCARD  2
 
-#define TEXT_VRAM      ((void*)0x000b8000)
-#define TEXT_VRAM_SIZE (80 * 25 * 2)
+#define TEXT_VRAM      ((u16*)0x000b8000)
+#define TEXT_CELLS     (80 * 25)
+#define TEXT_BLANK     0x0720
 
 struct setup_ata_slot {
     struct drive_s *drive;
@@ -108,9 +109,12 @@ setup_clear_screen(void)
 static void
 setup_blank_screen(void)
 {
-    // Setup always uses VGA color text mode 3, whose visible 80x25 page is
-    // the first 4000 bytes at physical address 0xb8000.
-    memset(TEXT_VRAM, 0, TEXT_VRAM_SIZE);
+    // Blank the visible 80x25 page with normal text attributes.  Clearing
+    // the bytes to zero would leave attribute 0x00 (black on black), which
+    // can make subsequent SeaBIOS or DOS output appear to hang invisibly.
+    int i;
+    for (i = 0; i < TEXT_CELLS; i++)
+        TEXT_VRAM[i] = TEXT_BLANK;
     setup_set_cursor(0, 0);
 }
 
