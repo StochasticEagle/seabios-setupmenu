@@ -153,14 +153,14 @@ setup_floppy_type(u8 type)
 {
     switch (type) {
     case 0: return "Not Present";
-    case 1: return "5.25 inch, 360 KiB";
-    case 2: return "5.25 inch, 1.2 MiB";
-    case 3: return "3.5 inch, 720 KiB";
-    case 4: return "3.5 inch, 1.44 MiB";
-    case 5: return "3.5 inch, 2.88 MiB";
-    case 6: return "5.25 inch, 160 KiB";
-    case 7: return "5.25 inch, 180 KiB";
-    case 8: return "5.25 inch, 320 KiB";
+    case 1: return "5.25 inch, 360 KB";
+    case 2: return "5.25 inch, 1200 KB";
+    case 3: return "3.5 inch, 720 KB";
+    case 4: return "3.5 inch, 1440 KB";
+    case 5: return "3.5 inch, 2880 KB";
+    case 6: return "5.25 inch, 160 KB";
+    case 7: return "5.25 inch, 180 KB";
+    case 8: return "5.25 inch, 320 KB";
     default: return "Unknown";
     }
 }
@@ -173,7 +173,7 @@ setup_draw_main(void)
     setup_get_cpu_name(cpu, sizeof(cpu));
 
     u64 memory = (u64)RamSize + RamSizeOver4G;
-    u32 memory_mib = memory >> 20;
+    u32 memory_mb = memory >> 20;
     u16 cpus = qemu_get_present_cpus_count();
     u8 floppy = CONFIG_FLOPPY ? rtc_read(CMOS_FLOPPY_DRIVE_TYPE) : 0;
 
@@ -189,7 +189,7 @@ setup_draw_main(void)
     setup_write_at(8, 5, line);
     snprintf(line, sizeof(line), "Processor(s):    %u", cpus);
     setup_write_at(9, 5, line);
-    snprintf(line, sizeof(line), "System Memory:   %u MiB", memory_mib);
+    snprintf(line, sizeof(line), "System Memory:   %u MB", memory_mb);
     setup_write_at(10, 5, line);
 
     snprintf(line, sizeof(line), "Floppy A:        %s"
