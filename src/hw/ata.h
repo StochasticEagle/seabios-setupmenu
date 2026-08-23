@@ -60,9 +60,9 @@ void ata_inventory_add_cd(struct drive_s *drive, const char *desc, int prio);
 #define ATA_CB_ER_ICRC 0x80    // ATA Ultra DMA bad CRC
 #define ATA_CB_ER_BBK  0x80    // ATA bad block
 #define ATA_CB_ER_UNC  0x40    // ATA uncorrected error
-#define ATA_CB_ER_MC   0x20    // media change
+#define ATA_CB_ER_MC   0x20    // ATA media change
 #define ATA_CB_ER_IDNF 0x10    // ata id not found
-#define ATA_CB_ER_MCR  0x08    // media change request
+#define ATA_CB_ER_MCR  0x08    // ATA media change request
 #define ATA_CB_ER_ABRT 0x04    // command aborted
 #define ATA_CB_ER_NTK0 0x02    // track 0 not found
 #define ATA_CB_ER_NDAM 0x01    // address mark not found
