@@ -189,7 +189,13 @@ setup_get_datetime(char *date, int datesize, char *time, int timesize)
 }
 
 static void
-setup_update_datetime(void)
+setup_main_cursor(int selected)
+{
+    setup_set_cursor(selected ? 21 : 20, 5);
+}
+
+static void
+setup_update_datetime(int selected)
 {
     char date[16], time[16], line[40];
     setup_get_datetime(date, sizeof(date), time, sizeof(time));
@@ -198,6 +204,10 @@ setup_update_datetime(void)
     setup_write_at(5, 5, line);
     snprintf(line, sizeof(line), "System Time:     %s", time);
     setup_write_at(6, 5, line);
+
+    // Writes move the VGA hardware cursor.  Put it back on the selected
+    // marker so the blinking cursor reinforces the current menu position.
+    setup_main_cursor(selected);
 }
 
 static void
@@ -315,7 +325,7 @@ setup_draw_main(int selected)
 
     setup_draw_frame();
     setup_write_at(3, 3, "Main");
-    setup_update_datetime();
+    setup_update_datetime(selected);
 
     snprintf(line, sizeof(line), "CPU:             %s", cpu);
     setup_write_at(8, 5, line);
@@ -344,6 +354,7 @@ setup_draw_main(int selected)
     printf("%c Boot Configuration", selected == 0 ? '>' : ' ');
     setup_set_cursor(21, 5);
     printf("%c Exit Setup", selected == 1 ? '>' : ' ');
+    setup_main_cursor(selected);
 }
 
 static void
@@ -362,6 +373,7 @@ setup_draw_boot(const u8 order[3], int selected)
         setup_write_at(9 + i * 2, 7, line);
     }
     setup_write_at(17, 5, "Changes remain staged until Save and Exit.");
+    setup_set_cursor(9 + selected * 2, 7);
 }
 
 static int
@@ -414,6 +426,7 @@ setup_draw_exit(int selected)
         setup_set_cursor(8 + i * 2, 7);
         printf("%c %s", selected == i ? '>' : ' ', items[i]);
     }
+    setup_set_cursor(8 + selected * 2, 7);
 }
 
 static int
@@ -478,7 +491,7 @@ setup_run(void)
         if (key < 0) {
             // Refresh only the two RTC fields.  Do not reset mode 3 or redraw
             // the page, because repeated VGA mode sets visibly flash in QEMU.
-            setup_update_datetime();
+            setup_update_datetime(selected);
         } else if (key == KEY_UP) {
             if (selected > 0) {
                 selected--;
