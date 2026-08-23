@@ -495,6 +495,22 @@ boot_init(void)
     loadBiosGeometry();
 }
 
+void
+boot_get_order(u8 order[3])
+{
+    order[0] = order[1] = order[2] = 0;
+    if (!CONFIG_QEMU)
+        return;
+
+    u32 bootorder = (rtc_read(CMOS_BIOS_BOOTFLAG2)
+                     | ((rtc_read(CMOS_BIOS_BOOTFLAG1) & 0xf0) << 4));
+    int i;
+    for (i = 0; i < 3; i++) {
+        order[i] = bootorder & 0x0f;
+        bootorder >>= 4;
+    }
+}
+
 
 /****************************************************************
  * BootList handling
@@ -520,6 +536,93 @@ static struct hlist_head BootList VARVERIFY32INIT;
 #define IPL_TYPE_BEV         0x80
 #define IPL_TYPE_BCV         0x81
 #define IPL_TYPE_HALT        0xf0
+
+static int
+boot_setup_class(int type)
+{
+    switch (type) {
+    case IPL_TYPE_FLOPPY:
+        return BOOT_ORDER_FLOPPY;
+    case IPL_TYPE_HARDDISK:
+    case IPL_TYPE_BCV:
+        return BOOT_ORDER_HD;
+    case IPL_TYPE_CDROM:
+        return BOOT_ORDER_CD;
+    case IPL_TYPE_BEV:
+        return BOOT_ORDER_BEV;
+    default:
+        return BOOT_ORDER_NONE;
+    }
+}
+
+static int
+boot_setup_rank(int type, const u8 order[3])
+{
+    int cls = boot_setup_class(type);
+    int i;
+    for (i = 0; i < 3; i++)
+        if (order[i] == cls && cls != BOOT_ORDER_NONE)
+            return i;
+    return 3;
+}
+
+static void
+boot_setup_insert(struct bootentry_s *be, const u8 order[3])
+{
+    int berank = boot_setup_rank(be->type, order);
+    struct hlist_node **pprev;
+    struct bootentry_s *pos;
+    hlist_for_each_entry_pprev(pos, pprev, &BootList, node) {
+        int posrank = boot_setup_rank(pos->type, order);
+        if (berank < posrank)
+            break;
+        if (berank > posrank)
+            continue;
+        if (be->priority < pos->priority)
+            break;
+        if (be->priority > pos->priority)
+            continue;
+        if (be->type < pos->type)
+            break;
+        if (be->type > pos->type)
+            continue;
+        if (be->type <= IPL_TYPE_CDROM
+            && (be->drive->type < pos->drive->type
+                || (be->drive->type == pos->drive->type
+                    && be->drive->cntl_id < pos->drive->cntl_id)))
+            break;
+    }
+    hlist_add(&be->node, pprev);
+}
+
+void
+boot_set_order(const u8 order[3])
+{
+    if (!CONFIG_QEMU)
+        return;
+
+    u8 flag1 = rtc_read(CMOS_BIOS_BOOTFLAG1);
+    rtc_write(CMOS_BIOS_BOOTFLAG2,
+              (order[0] & 0x0f) | ((order[1] & 0x0f) << 4));
+    rtc_write(CMOS_BIOS_BOOTFLAG1,
+              (flag1 & 0x0f) | ((order[2] & 0x0f) << 4));
+
+    // Setup runs only after device-enumeration threads have completed.
+    // Re-sort the already registered boot entries so this boot uses the
+    // newly saved class order without probing or registering devices again.
+    struct hlist_head old = { };
+    while (BootList.first) {
+        struct hlist_node *node = BootList.first;
+        hlist_del(node);
+        hlist_add_head(node, &old);
+    }
+    while (old.first) {
+        struct hlist_node *node = old.first;
+        hlist_del(node);
+        struct bootentry_s *be = container_of(node, struct bootentry_s, node);
+        boot_setup_insert(be, order);
+    }
+}
 
 static void
 bootentry_add(int type, int prio, u32 data, const char *desc)
