@@ -29,6 +29,12 @@ int ata_process_op(struct disk_op_s *op);
 int ata_atapi_process_op(struct disk_op_s *op);
 void ata_setup(void);
 
+// BIOS Setup observes ATA devices at their existing registration point.
+void ata_inventory_add_hd(struct drive_s *drive, const char *desc, int prio);
+void ata_inventory_add_cd(struct drive_s *drive, const char *desc, int prio);
+#define boot_add_hd ata_inventory_add_hd
+#define boot_add_cd ata_inventory_add_cd
+
 #define PORT_ATA2_CMD_BASE     0x0170
 #define PORT_ATA1_CMD_BASE     0x01f0
 #define PORT_ATA2_CTRL_BASE    0x0374
@@ -54,12 +60,12 @@ void ata_setup(void);
 #define ATA_CB_ER_ICRC 0x80    // ATA Ultra DMA bad CRC
 #define ATA_CB_ER_BBK  0x80    // ATA bad block
 #define ATA_CB_ER_UNC  0x40    // ATA uncorrected error
-#define ATA_CB_ER_MC   0x20    // ATA media change
-#define ATA_CB_ER_IDNF 0x10    // ATA id not found
-#define ATA_CB_ER_MCR  0x08    // ATA media change request
-#define ATA_CB_ER_ABRT 0x04    // ATA command aborted
-#define ATA_CB_ER_NTK0 0x02    // ATA track 0 not found
-#define ATA_CB_ER_NDAM 0x01    // ATA address mark not found
+#define ATA_CB_ER_MC   0x20    // media change
+#define ATA_CB_ER_IDNF 0x10    // ata id not found
+#define ATA_CB_ER_MCR  0x08    // media change request
+#define ATA_CB_ER_ABRT 0x04    // command aborted
+#define ATA_CB_ER_NTK0 0x02    // track 0 not found
+#define ATA_CB_ER_NDAM 0x01    // address mark not found
 
 #define ATA_CB_ER_P_SNSKEY 0xf0   // ATAPI sense key (mask)
 #define ATA_CB_ER_P_MCR    0x08   // ATAPI Media Change Request
@@ -67,7 +73,7 @@ void ata_setup(void);
 #define ATA_CB_ER_P_EOM    0x02   // ATAPI End of Media
 #define ATA_CB_ER_P_ILI    0x01   // ATAPI Illegal Length Indication
 
-// ATAPI Interrupt Reason bits in the Sector Count reg (CB_SC)
+// ATAPI Interrupt Reason bits in the Sector Count reg
 #define ATA_CB_SC_P_TAG    0xf8   // ATAPI tag (mask)
 #define ATA_CB_SC_P_REL    0x04   // ATAPI release
 #define ATA_CB_SC_P_IO     0x02   // ATAPI I/O
