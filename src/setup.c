@@ -79,33 +79,47 @@ bcd_to_bin(u8 value)
     return (value >> 4) * 10 + (value & 0x0f);
 }
 
+static u8
+setup_rtc_value(u8 value, u8 statusb)
+{
+    if (statusb & RTC_B_BIN)
+        return value;
+    return bcd_to_bin(value);
+}
+
 static void
 setup_get_datetime(char *date, int datesize, char *time, int timesize)
 {
-    struct bregs br;
-    memset(&br, 0, sizeof(br));
-    br.flags = F_IF;
-    br.ah = 0x04;
-    call16_int(0x1a, &br);
-    if (br.flags & F_CF) {
+    if (rtc_updating()) {
         snprintf(date, datesize, "Unavailable");
-    } else {
-        snprintf(date, datesize, "%02u/%02u/%02u%02u"
-                 , bcd_to_bin(br.dh), bcd_to_bin(br.dl)
-                 , bcd_to_bin(br.ch), bcd_to_bin(br.cl));
+        snprintf(time, timesize, "Unavailable");
+        return;
     }
 
-    memset(&br, 0, sizeof(br));
-    br.flags = F_IF;
-    br.ah = 0x02;
-    call16_int(0x1a, &br);
-    if (br.flags & F_CF) {
-        snprintf(time, timesize, "Unavailable");
+    u8 statusb = rtc_read(CMOS_STATUS_B);
+    u8 second = setup_rtc_value(rtc_read(CMOS_RTC_SECONDS), statusb);
+    u8 minute = setup_rtc_value(rtc_read(CMOS_RTC_MINUTES), statusb);
+    u8 hour = rtc_read(CMOS_RTC_HOURS);
+    u8 day = setup_rtc_value(rtc_read(CMOS_RTC_DAY_MONTH), statusb);
+    u8 month = setup_rtc_value(rtc_read(CMOS_RTC_MONTH), statusb);
+    u8 year = setup_rtc_value(rtc_read(CMOS_RTC_YEAR), statusb);
+    u8 century = setup_rtc_value(rtc_read(CMOS_CENTURY), statusb);
+
+    if (!(statusb & RTC_B_24HR)) {
+        u8 pm = hour & 0x80;
+        hour &= 0x7f;
+        hour = setup_rtc_value(hour, statusb);
+        if (pm && hour < 12)
+            hour += 12;
+        else if (!pm && hour == 12)
+            hour = 0;
     } else {
-        snprintf(time, timesize, "%02u:%02u:%02u"
-                 , bcd_to_bin(br.ch), bcd_to_bin(br.cl)
-                 , bcd_to_bin(br.dh));
+        hour = setup_rtc_value(hour, statusb);
     }
+
+    snprintf(date, datesize, "%02u/%02u/%02u%02u"
+             , month, day, century, year);
+    snprintf(time, timesize, "%02u:%02u:%02u", hour, minute, second);
 }
 
 static void
