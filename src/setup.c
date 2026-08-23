@@ -26,6 +26,7 @@
 
 #define KEY_ESC     0x011b
 #define KEY_ENTER   0x1c0d
+#define KEY_F2      0x3c00
 #define KEY_F10     0x4400
 #define KEY_UP      0x4800
 #define KEY_DOWN    0x5000
@@ -33,6 +34,20 @@
 #define SETUP_BACK     0
 #define SETUP_SAVE     1
 #define SETUP_DISCARD  2
+
+#define SETUP_TIMEOUT_0       0
+#define SETUP_TIMEOUT_2       1
+#define SETUP_TIMEOUT_5       2
+#define SETUP_TIMEOUT_10      3
+#define SETUP_TIMEOUT_30      4
+#define SETUP_TIMEOUT_KEY     5
+#define SETUP_TIMEOUT_COUNT   6
+#define SETUP_TIMEOUT_DEFAULT SETUP_TIMEOUT_5
+
+// Bits 1-3 of CMOS_BIOS_BOOTFLAG1 are unused by QEMU's standard PC boot
+// encoding.  A zero field means "not initialized", which deliberately maps
+// to the 5 second default.  Stored values 1-6 encode the six choices above.
+#define SETUP_TIMEOUT_CMOS_MASK 0x0e
 
 #define TEXT_VRAM       ((u16*)0x000b8000)
 #define TEXT_COLS       80
@@ -76,6 +91,77 @@ ata_inventory_add_cd(struct drive_s *drive, const char *desc, int prio)
 {
     setup_record_ata(drive, desc);
     boot_add_cd(drive, desc, prio);
+}
+
+static int
+setup_timeout_get(void)
+{
+    u8 encoded = (rtc_read(CMOS_BIOS_BOOTFLAG1) & SETUP_TIMEOUT_CMOS_MASK) >> 1;
+    if (encoded < 1 || encoded > SETUP_TIMEOUT_COUNT)
+        return SETUP_TIMEOUT_DEFAULT;
+    return encoded - 1;
+}
+
+static void
+setup_timeout_set(int timeout)
+{
+    if (timeout < 0 || timeout >= SETUP_TIMEOUT_COUNT)
+        timeout = SETUP_TIMEOUT_DEFAULT;
+    u8 flag1 = rtc_read(CMOS_BIOS_BOOTFLAG1);
+    flag1 &= ~SETUP_TIMEOUT_CMOS_MASK;
+    flag1 |= (timeout + 1) << 1;
+    rtc_write(CMOS_BIOS_BOOTFLAG1, flag1);
+}
+
+static const char *
+setup_timeout_name(int timeout)
+{
+    switch (timeout) {
+    case SETUP_TIMEOUT_0:   return "0 seconds";
+    case SETUP_TIMEOUT_2:   return "2 seconds";
+    case SETUP_TIMEOUT_5:   return "5 seconds";
+    case SETUP_TIMEOUT_10:  return "10 seconds";
+    case SETUP_TIMEOUT_30:  return "30 seconds";
+    case SETUP_TIMEOUT_KEY: return "Press key to boot";
+    default:                return "5 seconds";
+    }
+}
+
+static int
+setup_timeout_msec(int timeout)
+{
+    switch (timeout) {
+    case SETUP_TIMEOUT_0:  return 0;
+    case SETUP_TIMEOUT_2:  return 2000;
+    case SETUP_TIMEOUT_5:  return 5000;
+    case SETUP_TIMEOUT_10: return 10000;
+    case SETUP_TIMEOUT_30: return 30000;
+    default:               return -1;
+    }
+}
+
+int
+setup_prompt(void)
+{
+    int timeout = setup_timeout_get();
+    int wait = setup_timeout_msec(timeout);
+    if (!wait)
+        return 0;
+
+    while (get_keystroke_full(0) >= 0)
+        ;
+
+    int key;
+    if (timeout == SETUP_TIMEOUT_KEY) {
+        printf("Press F2 to enter Setup, or any other key to boot.\n");
+        do {
+            key = get_keystroke_full(1000);
+        } while (key < 0);
+    } else {
+        printf("Press F2 to enter Setup (%u seconds).\n", wait / 1000);
+        key = get_keystroke_full(wait);
+    }
+    return key == KEY_F2;
 }
 
 static void
@@ -374,6 +460,16 @@ setup_boot_cycle(u8 order[3], int selected, int direction)
 }
 
 static void
+setup_timeout_cycle(int *timeout, int direction)
+{
+    *timeout += direction;
+    if (*timeout >= SETUP_TIMEOUT_COUNT)
+        *timeout = 0;
+    else if (*timeout < 0)
+        *timeout = SETUP_TIMEOUT_COUNT - 1;
+}
+
+static void
 setup_draw_main(int selected)
 {
     char cpu[49], line[80];
@@ -428,12 +524,12 @@ setup_draw_main(int selected)
 }
 
 static void
-setup_draw_boot(const u8 order[3], int selected)
+setup_draw_boot(const u8 order[3], int timeout, int selected)
 {
     char line[80];
     setup_draw_frame();
     setup_write_at(3, 3, "Boot Configuration");
-    setup_write_at(5, 5, "Choose the boot device class for each priority slot.");
+    setup_write_at(5, 5, "Choose boot priority and the F2 Setup prompt timeout.");
     setup_write_at(6, 5, "Use +/- or Enter to change the selected value.");
 
     int i;
@@ -444,15 +540,22 @@ setup_draw_boot(const u8 order[3], int selected)
         setup_write_at(9 + i * 2, 7, line);
         setup_set_attr(9 + i * 2, 25, strlen(name), TEXT_BLUE_GRAY);
     }
-    setup_write_at(17, 5, "Changes remain staged until Save and Exit.");
-    setup_mark_selected(9 + selected * 2, 7);
+
+    const char *timeout_name = setup_timeout_name(timeout);
+    snprintf(line, sizeof(line), "%c Setup Timeout:  %s"
+             , selected == 3 ? '>' : ' ', timeout_name);
+    setup_write_at(15, 7, line);
+    setup_set_attr(15, 25, strlen(timeout_name), TEXT_BLUE_GRAY);
+
+    setup_write_at(18, 5, "Changes remain staged until Save and Exit.");
+    setup_mark_selected(selected < 3 ? 9 + selected * 2 : 15, 7);
 }
 
 static int
-setup_boot_page(u8 order[3])
+setup_boot_page(u8 order[3], int *timeout)
 {
     int selected = 0;
-    setup_draw_boot(order, selected);
+    setup_draw_boot(order, *timeout, selected);
     for (;;) {
         int key = get_keystroke_full(1000);
         int redraw = 0;
@@ -462,15 +565,21 @@ setup_boot_page(u8 order[3])
                 redraw = 1;
             }
         } else if (key == KEY_DOWN) {
-            if (selected < 2) {
+            if (selected < 3) {
                 selected++;
                 redraw = 1;
             }
         } else if (key == KEY_ENTER || (key & 0xff) == '+') {
-            setup_boot_cycle(order, selected, 1);
+            if (selected < 3)
+                setup_boot_cycle(order, selected, 1);
+            else
+                setup_timeout_cycle(timeout, 1);
             redraw = 1;
         } else if ((key & 0xff) == '-') {
-            setup_boot_cycle(order, selected, -1);
+            if (selected < 3)
+                setup_boot_cycle(order, selected, -1);
+            else
+                setup_timeout_cycle(timeout, -1);
             redraw = 1;
         } else if (key == KEY_ESC) {
             return SETUP_BACK;
@@ -478,7 +587,7 @@ setup_boot_page(u8 order[3])
             return SETUP_SAVE;
         }
         if (redraw)
-            setup_draw_boot(order, selected);
+            setup_draw_boot(order, *timeout, selected);
     }
 }
 
@@ -555,6 +664,7 @@ setup_run(void)
     for (i = 0; i < 3; i++)
         if (order[i] > BOOT_ORDER_BEV)
             order[i] = BOOT_ORDER_NONE;
+    int timeout = setup_timeout_get();
 
     int selected = 0;
     setup_draw_main(selected);
@@ -578,11 +688,12 @@ setup_run(void)
         } else if (key == KEY_ENTER) {
             int action;
             if (selected == 0)
-                action = setup_boot_page(order);
+                action = setup_boot_page(order, &timeout);
             else
                 action = setup_exit_page();
             if (action == SETUP_SAVE) {
                 boot_set_order(order);
+                setup_timeout_set(timeout);
                 setup_blank_screen();
                 return;
             }
@@ -596,6 +707,7 @@ setup_run(void)
             return;
         } else if (key == KEY_F10) {
             boot_set_order(order);
+            setup_timeout_set(timeout);
             setup_blank_screen();
             return;
         }
