@@ -22,7 +22,7 @@
 #undef boot_add_hd
 #undef boot_add_cd
 
-#define SETUP_FWCFG_PATH "opt/org.seabios/setup"
+#define SETUP_FWCFG_PATH "opt/seabios/setup"
 
 #define KEY_ESC     0x011b
 #define KEY_ENTER   0x1c0d
