@@ -793,13 +793,17 @@ init_drive_ata(struct atadrive_s *dummy, u16 *buffer)
     adrive->drive.sectors = sectors;
     u64 adjsize = sectors >> 11;
     char adjprefix = 'M';
-    if (adjsize >= (1 << 16)) {
+    if (adjsize >= (1 << 10)) {
         adjsize >>= 10;
         adjprefix = 'G';
     }
+    if (adjsize >= (1 << 10)) {
+        adjsize >>= 10;
+        adjprefix = 'T';
+    }
     char model[MAXMODEL+1];
     char *desc = znprintf(MAXDESCSIZE
-                          , "ata%d-%d: %s ATA-%d Hard-Disk (%u %cBytes)"
+                          , "ata%d-%d: %s ATA-%d Hard-Disk (%u %cB)"
                           , adrive->chan_gf->ataid, adrive->slave
                           , ata_extract_model(model, MAXMODEL, buffer)
                           , ata_extract_version(buffer)
