@@ -41,6 +41,7 @@
 #define TEXT_BLANK      0x0720
 #define TEXT_BLUE_BLANK 0x1f20
 #define TEXT_BLUE       0x1f
+#define TEXT_BLUE_GRAY  0x17
 #define TEXT_BLUE_BLINK 0x9f
 
 struct setup_ata_slot {
@@ -156,6 +157,16 @@ setup_fill_blue_area(void)
 }
 
 static void
+setup_set_attr(u8 row, u8 col, int len, u8 attr)
+{
+    int i;
+    for (i = 0; i < len && col + i < TEXT_COLS; i++) {
+        u16 *cell = &TEXT_VRAM[row * TEXT_COLS + col + i];
+        *cell = (*cell & 0x00ff) | ((u16)attr << 8);
+    }
+}
+
+static void
 setup_mark_selected(u8 row, u8 col)
 {
     u16 *cell = &TEXT_VRAM[row * TEXT_COLS + col];
@@ -254,8 +265,10 @@ setup_update_datetime(void)
 
     snprintf(line, sizeof(line), "System Date:     %s", date);
     setup_write_at(5, 5, line);
+    setup_set_attr(5, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
     snprintf(line, sizeof(line), "System Time:     %s", time);
     setup_write_at(6, 5, line);
+    setup_set_attr(6, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
 }
 
 static void
@@ -377,26 +390,35 @@ setup_draw_main(int selected)
 
     snprintf(line, sizeof(line), "CPU:             %s", cpu);
     setup_write_at(8, 5, line);
+    setup_set_attr(8, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
     snprintf(line, sizeof(line), "Processor(s):    %u", cpus);
     setup_write_at(9, 5, line);
+    setup_set_attr(9, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
     snprintf(line, sizeof(line), "System Memory:   %u MB", memory_mb);
     setup_write_at(10, 5, line);
+    setup_set_attr(10, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
 
     snprintf(line, sizeof(line), "Primary Master:  %s", setup_ata_description(0, 0));
     setup_write_at(12, 5, line);
+    setup_set_attr(12, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
     snprintf(line, sizeof(line), "Primary Slave:   %s", setup_ata_description(0, 1));
     setup_write_at(13, 5, line);
+    setup_set_attr(13, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
     snprintf(line, sizeof(line), "Secondary Master:%s", setup_ata_description(1, 0));
     setup_write_at(14, 5, line);
+    setup_set_attr(14, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
     snprintf(line, sizeof(line), "Secondary Slave: %s", setup_ata_description(1, 1));
     setup_write_at(15, 5, line);
+    setup_set_attr(15, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
 
     snprintf(line, sizeof(line), "Floppy A:        %s"
              , CONFIG_FLOPPY ? setup_floppy_type(floppy >> 4) : "Disabled");
     setup_write_at(17, 5, line);
+    setup_set_attr(17, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
     snprintf(line, sizeof(line), "Floppy B:        %s"
              , CONFIG_FLOPPY ? setup_floppy_type(floppy & 0x0f) : "Disabled");
     setup_write_at(18, 5, line);
+    setup_set_attr(18, 22, strlen(line) - 17, TEXT_BLUE_GRAY);
 
     setup_set_cursor(20, 5);
     printf("%c Boot Configuration", selected == 0 ? '>' : ' ');
@@ -416,9 +438,11 @@ setup_draw_boot(const u8 order[3], int selected)
 
     int i;
     for (i = 0; i < 3; i++) {
+        const char *name = setup_boot_name(order[i]);
         snprintf(line, sizeof(line), "%c Boot Option %u:  %s"
-                 , selected == i ? '>' : ' ', i + 1, setup_boot_name(order[i]));
+                 , selected == i ? '>' : ' ', i + 1, name);
         setup_write_at(9 + i * 2, 7, line);
+        setup_set_attr(9 + i * 2, 25, strlen(name), TEXT_BLUE_GRAY);
     }
     setup_write_at(17, 5, "Changes remain staged until Save and Exit.");
     setup_mark_selected(9 + selected * 2, 7);
