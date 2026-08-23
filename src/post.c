@@ -20,7 +20,7 @@
 #include "malloc.h" // malloc_init
 #include "memmap.h" // SYMBOL
 #include "output.h" // dprintf
-#include "setup.h" // setup_requested, setup_run
+#include "setup.h" // setup_requested, setup_prompt, setup_run
 #include "string.h" // memset
 #include "util.h" // kbd_init
 #include "tcgbios.h" // tpm_*
@@ -221,8 +221,12 @@ maininit(void)
     // Run option roms
     optionrom_setup();
 
-    // Enter BIOS Setup when requested by the QEMU fw_cfg interface.
-    if (setup_requested()) {
+    // fw_cfg can force Setup for testing.  Otherwise offer the normal F2
+    // entry prompt using the timeout configured in Setup.
+    int run_setup = setup_requested();
+    if (!run_setup)
+        run_setup = setup_prompt();
+    if (run_setup) {
         wait_threads();
         setup_run();
     }
