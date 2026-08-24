@@ -743,7 +743,8 @@ int conf_write(const char *name)
 	struct menu *menu;
 	const char *basename;
 	const char *str;
-	char dirname[PATH_MAX+1], tmpname[PATH_MAX+1], newname[PATH_MAX+1];
+	char dirname[PATH_MAX], tmpname[PATH_MAX], newname[PATH_MAX];
+	int len;
 	char *env;
 
 	dirname[0] = 0;
@@ -752,13 +753,16 @@ int conf_write(const char *name)
 		char *slash;
 
 		if (!stat(name, &st) && S_ISDIR(st.st_mode)) {
-			strcpy(dirname, name);
-			strcat(dirname, "/");
+			len = snprintf(dirname, sizeof(dirname), "%s/", name);
+			if (len < 0 || (size_t)len >= sizeof(dirname))
+			    return 1;
 			basename = conf_get_configname();
 		} else if ((slash = strrchr(name, '/'))) {
-			int size = slash - name + 1;
+			size_t size = slash - name + 1;
+			if (size >= sizeof(dirname))
+			    return 1;
 			memcpy(dirname, name, size);
-			dirname[size] = 0;
+			dirname[size] = '\0';
 			if (slash[1])
 				basename = slash + 1;
 			else
@@ -768,10 +772,16 @@ int conf_write(const char *name)
 	} else
 		basename = conf_get_configname();
 
-	sprintf(newname, "%s%s", dirname, basename);
+	len = snprintf(newname, sizeof(newname), "%s%s",
+               dirname, basename);
+	if (len < 0 || (size_t)len >= sizeof(newname))
+	    return 1;
 	env = getenv("KCONFIG_OVERWRITECONFIG");
 	if (!env || !*env) {
-		sprintf(tmpname, "%s.tmpconfig.%d", dirname, (int)getpid());
+		len = snprintf(tmpname, sizeof(tmpname),
+               "%s.tmpconfig.%d", dirname, (int)getpid());
+		if (len < 0 || (size_t)len >= sizeof(tmpname))
+		    return 1;
 		out = fopen(tmpname, "w");
 	} else {
 		*tmpname = 0;
