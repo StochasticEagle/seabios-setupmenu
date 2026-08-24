@@ -823,7 +823,7 @@ static hotplug_type_t pci_bus_hotplug_support(struct pci_bus *bus, u8 pcie_cap)
                              (port_type == PCI_EXP_TYPE_ROOT_PORT);
         /*
          * PCI Express SPEC, 7.8.2:
-         *   Slot Implemented  When Set, this bit indicates that the Link
+         *   Slot Implemented - When Set, this bit indicates that the Link
          *   HwInit associated with this Port is connected to a slot (as
          *   compared to being connected to a system-integrated device or
          *   being disabled).
