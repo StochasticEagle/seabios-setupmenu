@@ -1,6 +1,6 @@
 // Compatibility Support Module (CSM) for UEFI / EDK-II
 //
-// Copyright © 2013 Intel Corporation
+// Copyright  2013 Intel Corporation
 //
 // This file may be distributed under the terms of the GNU LGPLv3 license.
 
